@@ -25,6 +25,9 @@ importers:
       '@clack/prompts':
         specifier: ^0.11.0
         version: 0.11.0
+      '@daydreamsai/saw':
+        specifier: link:../agent-wallet/packages/saw
+        version: link:../agent-wallet/packages/saw
       '@grammyjs/runner':
         specifier: ^2.0.3
         version: 2.0.3(grammy@1.39.3)
@@ -269,7 +272,11 @@ importers:
 
   extensions/copilot-proxy: {}
 
-  extensions/daydreams-x402-auth: {}
+  extensions/daydreams-x402-auth:
+    dependencies:
+      '@daydreamsai/saw':
+        specifier: link:../../../agent-wallet/packages/saw
+        version: link:../../../agent-wallet/packages/saw
 
   extensions/diagnostics-otel:
     dependencies:
