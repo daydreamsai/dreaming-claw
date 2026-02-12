@@ -86,20 +86,13 @@ SAW_POLICY_TEMPLATE="${SAW_POLICY_TEMPLATE:-conservative}"
 # ── SAW functions ───────────────────────────────────────────────────────────
 
 saw_detect_platform() {
-  local os arch
+  local os
   os="$(uname -s)"
-  arch="$(uname -m)"
   case "$os" in
     Linux)  SAW_OS_NAME="linux" ;;
     Darwin) SAW_OS_NAME="macos" ;;
     *)      echo "ERROR: SAW requires Linux or macOS, got $os" >&2; return 1 ;;
   esac
-  case "$arch" in
-    x86_64|amd64)  SAW_ARCH="x86_64" ;;
-    arm64|aarch64) SAW_ARCH="arm64" ;;
-    *)             echo "ERROR: Unsupported architecture: $arch" >&2; return 1 ;;
-  esac
-  SAW_ARCHIVE="saw-${SAW_OS_NAME}-${SAW_ARCH}.tar.gz"
 }
 
 saw_set_platform_defaults() {
@@ -118,14 +111,53 @@ saw_set_platform_defaults() {
     fi
   fi
 
+  # Binary install directory — matches upstream default on macOS,
+  # uses /usr/local/bin on Linux (accessible to systemd service user).
   if [[ "$SAW_OS_NAME" == "macos" ]]; then
+    SAW_BIN_DIR="$HOME/.saw/bin"
     SAW_PLIST_LABEL="com.daydreamsai.saw"
     SAW_PLIST_PATH="$HOME/Library/LaunchAgents/${SAW_PLIST_LABEL}.plist"
     SAW_LOG_DIR="$HOME/Library/Logs/saw"
+  else
+    SAW_BIN_DIR="/usr/local/bin"
   fi
 }
 
-saw_resolve_version() {
+# Upstream SAW install.sh URL (supports SAW_INSTALL_SH_NO_RUN guard)
+SAW_UPSTREAM_INSTALLER="https://raw.githubusercontent.com/${SAW_RELEASE_REPO:-daydreamsai/agent-wallet}/master/install.sh"
+
+saw_install_binaries_and_init() {
+  # Stop daemon if running — can't overwrite a running binary ("text file busy")
+  if [[ "$SAW_OS_NAME" == "linux" ]]; then
+    if systemctl is-active saw &>/dev/null; then
+      sudo systemctl stop saw
+      echo "==> SAW: stopped running daemon for binary upgrade"
+    fi
+  elif [[ "$SAW_OS_NAME" == "macos" ]]; then
+    if launchctl list "${SAW_PLIST_LABEL:-}" &>/dev/null 2>&1; then
+      launchctl bootout "gui/$(id -u)" "$SAW_PLIST_PATH" 2>/dev/null || true
+      echo "==> SAW: stopped running daemon for binary upgrade"
+    fi
+  fi
+
+  if [[ "$SAW_OS_NAME" == "macos" ]]; then
+    # macOS: delegate to upstream install.sh (handles macOS fallbacks,
+    # installs to ~/.saw/bin, inits data dir)
+    echo "==> SAW: running upstream installer..."
+    local installer_env=()
+    installer_env+=(SAW_ROOT="$SAW_ROOT")
+    installer_env+=(SAW_INSTALL="$SAW_BIN_DIR")
+    [[ -n "$SAW_VERSION" ]] && installer_env+=(SAW_VERSION="$SAW_VERSION")
+    curl -fsSL "$SAW_UPSTREAM_INSTALLER" | env "${installer_env[@]}" sh
+  else
+    # Linux: our own install (needs sudo for /usr/local/bin + /opt/saw)
+    saw_linux_resolve_version
+    saw_linux_download_and_install
+    saw_linux_init_root
+  fi
+}
+
+saw_linux_resolve_version() {
   if [[ -n "$SAW_VERSION" ]]; then
     echo "==> SAW: using pinned version v${SAW_VERSION}"
     return 0
@@ -140,7 +172,7 @@ saw_resolve_version() {
   echo "==> SAW: latest version v${SAW_VERSION}"
 }
 
-saw_download_and_install() {
+saw_linux_download_and_install() {
   # Idempotency: check existing version
   if command -v saw >/dev/null 2>&1; then
     local existing_version
@@ -152,34 +184,39 @@ saw_download_and_install() {
     echo "==> SAW: upgrading from v${existing_version:-unknown} to v${SAW_VERSION}"
   fi
 
-  local url="https://github.com/${SAW_RELEASE_REPO}/releases/download/v${SAW_VERSION}/${SAW_ARCHIVE}"
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64)  arch="x86_64" ;;
+    arm64|aarch64) arch="arm64" ;;
+    *)             echo "ERROR: Unsupported architecture: $arch" >&2; return 1 ;;
+  esac
+  local archive="saw-linux-${arch}.tar.gz"
+  local url="https://github.com/${SAW_RELEASE_REPO}/releases/download/v${SAW_VERSION}/${archive}"
   local tmpdir
   tmpdir="$(mktemp -d)"
 
-  echo "==> SAW: downloading ${SAW_ARCHIVE}..."
-  if ! curl -sSL -o "${tmpdir}/${SAW_ARCHIVE}" "$url"; then
+  echo "==> SAW: downloading ${archive}..."
+  if ! curl -sSL -o "${tmpdir}/${archive}" "$url"; then
     echo "ERROR: SAW download failed: $url" >&2
     rm -rf "$tmpdir"
     return 1
   fi
 
-  tar xzf "${tmpdir}/${SAW_ARCHIVE}" -C "$tmpdir"
-  # Stop daemon if running — can't overwrite a running binary ("text file busy")
-  if [[ "$SAW_OS_NAME" == "linux" ]]; then
-    if systemctl is-active saw &>/dev/null; then
-      sudo systemctl stop saw
-      echo "==> SAW: stopped running daemon for binary upgrade"
-    fi
-  elif [[ "$SAW_OS_NAME" == "macos" ]]; then
-    if launchctl list "$SAW_PLIST_LABEL" &>/dev/null 2>&1; then
-      launchctl bootout "gui/$(id -u)" "$SAW_PLIST_PATH" 2>/dev/null || true
-      echo "==> SAW: stopped running daemon for binary upgrade"
-    fi
-  fi
-  sudo install -m 755 "${tmpdir}/saw" /usr/local/bin/saw
-  sudo install -m 755 "${tmpdir}/saw-daemon" /usr/local/bin/saw-daemon
+  tar xzf "${tmpdir}/${archive}" -C "$tmpdir"
+  sudo install -m 755 "${tmpdir}/saw" "$SAW_BIN_DIR/saw"
+  sudo install -m 755 "${tmpdir}/saw-daemon" "$SAW_BIN_DIR/saw-daemon"
   rm -rf "$tmpdir"
-  echo "==> SAW: binaries installed to /usr/local/bin/"
+  echo "==> SAW: binaries installed to $SAW_BIN_DIR/"
+}
+
+saw_linux_init_root() {
+  if [[ -d "$SAW_ROOT/keys" ]]; then
+    echo "==> SAW: data directory already initialized at $SAW_ROOT"
+    return 0
+  fi
+  sudo "$SAW_BIN_DIR/saw" install --root "$SAW_ROOT"
+  echo "==> SAW: initialized data directory at $SAW_ROOT"
 }
 
 saw_create_users() {
@@ -213,20 +250,6 @@ saw_create_users() {
   fi
 }
 
-saw_init_root() {
-  if [[ -d "$SAW_ROOT/keys" ]]; then
-    echo "==> SAW: data directory already initialized at $SAW_ROOT"
-    return 0
-  fi
-  if [[ "$SAW_OS_NAME" == "macos" ]]; then
-    mkdir -p "$SAW_ROOT"
-    /usr/local/bin/saw install --root "$SAW_ROOT"
-  else
-    sudo /usr/local/bin/saw install --root "$SAW_ROOT"
-  fi
-  echo "==> SAW: initialized data directory at $SAW_ROOT"
-}
-
 saw_generate_key() {
   if [[ "$SAW_SKIP_KEYGEN" == "1" ]]; then
     echo "==> SAW: skipping key generation (SAW_SKIP_KEYGEN=1)"
@@ -238,18 +261,18 @@ saw_generate_key() {
   if [[ -f "$key_file" ]]; then
     echo "==> SAW: wallet '${SAW_WALLET}' already exists for chain '${SAW_CHAIN}'"
     if [[ "$SAW_OS_NAME" == "macos" ]]; then
-      /usr/local/bin/saw address --chain "$SAW_CHAIN" --wallet "$SAW_WALLET" --root "$SAW_ROOT" 2>/dev/null || true
+      "$SAW_BIN_DIR/saw" address --chain "$SAW_CHAIN" --wallet "$SAW_WALLET" --root "$SAW_ROOT" 2>/dev/null || true
     else
-      sudo /usr/local/bin/saw address --chain "$SAW_CHAIN" --wallet "$SAW_WALLET" --root "$SAW_ROOT" 2>/dev/null || true
+      sudo "$SAW_BIN_DIR/saw" address --chain "$SAW_CHAIN" --wallet "$SAW_WALLET" --root "$SAW_ROOT" 2>/dev/null || true
     fi
     return 0
   fi
 
   echo "==> SAW: generating key (chain=${SAW_CHAIN}, wallet=${SAW_WALLET})"
   if [[ "$SAW_OS_NAME" == "macos" ]]; then
-    /usr/local/bin/saw gen-key --chain "$SAW_CHAIN" --wallet "$SAW_WALLET" --root "$SAW_ROOT"
+    "$SAW_BIN_DIR/saw" gen-key --chain "$SAW_CHAIN" --wallet "$SAW_WALLET" --root "$SAW_ROOT"
   else
-    sudo /usr/local/bin/saw gen-key --chain "$SAW_CHAIN" --wallet "$SAW_WALLET" --root "$SAW_ROOT"
+    sudo "$SAW_BIN_DIR/saw" gen-key --chain "$SAW_CHAIN" --wallet "$SAW_WALLET" --root "$SAW_ROOT"
   fi
   echo "==> SAW: key generated on-device (never exported)"
   echo ""
@@ -343,7 +366,7 @@ saw_install_launchagent() {
   <string>${SAW_PLIST_LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/saw-daemon</string>
+    <string>${SAW_BIN_DIR}/saw-daemon</string>
     <string>--socket</string>
     <string>${SAW_SOCKET}</string>
     <string>--root</string>
@@ -383,7 +406,7 @@ Type=simple
 User=${SAW_SERVICE_USER}
 Group=${SAW_SERVICE_USER}
 SupplementaryGroups=${SAW_AGENT_GROUP}
-ExecStart=/usr/local/bin/saw-daemon --socket ${SAW_SOCKET} --root ${SAW_ROOT}
+ExecStart=${SAW_BIN_DIR}/saw-daemon --socket ${SAW_SOCKET} --root ${SAW_ROOT}
 Restart=on-failure
 RestartSec=2
 
@@ -488,10 +511,8 @@ if [[ "$SAW_INSTALL" == "1" ]]; then
   echo ""
   saw_detect_platform
   saw_set_platform_defaults
-  saw_resolve_version
-  saw_download_and_install
+  saw_install_binaries_and_init
   saw_create_users
-  saw_init_root
   saw_generate_key
   saw_write_policy
   saw_fix_permissions
