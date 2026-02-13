@@ -25,7 +25,7 @@ set -euo pipefail
 #   OPENCLAW_INSTALLER=npm|pnpm|auto
 #   OPENCLAW_BIN=openclaw|moltbot
 #   OPENCLAW_RUN_ONBOARD=1|0
-#   OPENCLAW_ONBOARD_ARGS="onboard --install-daemon --auth-choice x402"
+#   OPENCLAW_ONBOARD_ARGS="onboard --install-daemon --auth-choice x402"  # auto-resolved if empty (non-interactive when piped)
 #   OPENCLAW_NPM_SCRIPT_SHELL=/path/to/sh  # optional npm lifecycle shell override
 #
 # SAW overrides:
@@ -51,11 +51,11 @@ OPENCLAW_BRANCH="${OPENCLAW_BRANCH:-}"
 OPENCLAW_INSTALLER="${OPENCLAW_INSTALLER:-npm}"
 OPENCLAW_BIN="${OPENCLAW_BIN:-}"
 OPENCLAW_RUN_ONBOARD="${OPENCLAW_RUN_ONBOARD:-1}"
-OPENCLAW_ONBOARD_ARGS="${OPENCLAW_ONBOARD_ARGS:-onboard --install-daemon --auth-choice x402}"
+OPENCLAW_ONBOARD_ARGS="${OPENCLAW_ONBOARD_ARGS:-}"  # resolved after TTY detection
 OPENCLAW_NPM_SCRIPT_SHELL="${OPENCLAW_NPM_SCRIPT_SHELL:-}"
 
 if [[ -z "$OPENCLAW_SPEC" && -z "$OPENCLAW_REF" && -z "$OPENCLAW_BRANCH" ]]; then
-  OPENCLAW_REF="v2026.2.9-dreamclaw.12"
+  OPENCLAW_REF="v2026.2.9-dreamclaw.13"
 fi
 
 if [[ -n "$OPENCLAW_SPEC" && ( -n "$OPENCLAW_REF" || -n "$OPENCLAW_BRANCH" ) ]]; then
@@ -269,10 +269,27 @@ saw_generate_key() {
   fi
 
   echo "==> SAW: generating key (chain=${SAW_CHAIN}, wallet=${SAW_WALLET})"
+  local gen_output
   if [[ "$SAW_OS_NAME" == "macos" ]]; then
-    "$SAW_BIN_DIR/saw" gen-key --chain "$SAW_CHAIN" --wallet "$SAW_WALLET" --root "$SAW_ROOT"
+    gen_output="$("$SAW_BIN_DIR/saw" gen-key --chain "$SAW_CHAIN" --wallet "$SAW_WALLET" --root "$SAW_ROOT" 2>&1)" || {
+      if [[ "$gen_output" == *"already exists"* ]]; then
+        echo "==> SAW: wallet '${SAW_WALLET}' already exists for chain '${SAW_CHAIN}'"
+        "$SAW_BIN_DIR/saw" address --chain "$SAW_CHAIN" --wallet "$SAW_WALLET" --root "$SAW_ROOT" 2>/dev/null || true
+        return 0
+      fi
+      echo "ERROR: saw gen-key failed: $gen_output" >&2
+      return 1
+    }
   else
-    sudo "$SAW_BIN_DIR/saw" gen-key --chain "$SAW_CHAIN" --wallet "$SAW_WALLET" --root "$SAW_ROOT"
+    gen_output="$(sudo "$SAW_BIN_DIR/saw" gen-key --chain "$SAW_CHAIN" --wallet "$SAW_WALLET" --root "$SAW_ROOT" 2>&1)" || {
+      if [[ "$gen_output" == *"already exists"* ]]; then
+        echo "==> SAW: wallet '${SAW_WALLET}' already exists for chain '${SAW_CHAIN}'"
+        sudo "$SAW_BIN_DIR/saw" address --chain "$SAW_CHAIN" --wallet "$SAW_WALLET" --root "$SAW_ROOT" 2>/dev/null || true
+        return 0
+      fi
+      echo "ERROR: saw gen-key failed: $gen_output" >&2
+      return 1
+    }
   fi
   echo "==> SAW: key generated on-device (never exported)"
   echo ""
@@ -716,13 +733,20 @@ echo "==> Installed version: ${INSTALLED_VERSION:-unknown}"
 
 # ── Phase 3: Onboarding ────────────────────────────────────────────────────
 
-if [[ "$OPENCLAW_RUN_ONBOARD" == "1" ]]; then
+# Resolve onboard args if not explicitly set
+if [[ -z "$OPENCLAW_ONBOARD_ARGS" ]]; then
+  OPENCLAW_ONBOARD_ARGS="onboard --install-daemon --auth-choice x402"
+fi
+
+show_onboard_instructions() {
   echo ""
   echo "============================================"
-  echo "  Phase 3: OpenClaw Onboarding"
+  echo "  Next step: run onboarding"
   echo "============================================"
+  echo ""
+  echo "  $CLI_BIN_PATH onboard --auth-choice x402"
+  echo ""
   if [[ "$SAW_INSTALL" == "1" && -S "$SAW_SOCKET" ]]; then
-    echo ""
     echo "  SAW is running. When prompted for x402 auth:"
     echo ""
     echo "    Socket path: $SAW_SOCKET"
@@ -731,16 +755,32 @@ if [[ "$OPENCLAW_RUN_ONBOARD" == "1" ]]; then
     echo ""
     echo "  Choose 'Secure Agent Wallet (SAW)' when asked"
     echo "  for the signing method."
+    echo ""
   fi
   echo "============================================"
-  echo ""
-  export SAW_SOCKET
-  # shellcheck disable=SC2086
-  "$CLI_BIN_PATH" ${OPENCLAW_ONBOARD_ARGS}
+}
+
+if [[ "$OPENCLAW_RUN_ONBOARD" == "1" ]]; then
+  if [[ -t 0 ]]; then
+    # stdin is a TTY — interactive prompts will work
+    echo ""
+    echo "============================================"
+    echo "  Phase 3: OpenClaw Onboarding"
+    echo "============================================"
+    echo ""
+    export SAW_SOCKET
+    # shellcheck disable=SC2086
+    "$CLI_BIN_PATH" ${OPENCLAW_ONBOARD_ARGS} || {
+      echo ""
+      echo "==> Onboarding exited with an error. You can re-run it manually:"
+      show_onboard_instructions
+    }
+  else
+    # No TTY (curl | bash) — interactive prompts will fail
+    echo "==> Skipping onboarding (no TTY — running via curl | bash)"
+    show_onboard_instructions
+  fi
 else
   echo "==> Skipping onboarding (OPENCLAW_RUN_ONBOARD=${OPENCLAW_RUN_ONBOARD})"
-  echo "    Run manually: ${CLI_BIN_PATH} ${OPENCLAW_ONBOARD_ARGS}"
-  if [[ "$SAW_INSTALL" == "1" && -S "$SAW_SOCKET" ]]; then
-    echo "    SAW sentinel: saw:${SAW_WALLET}@${SAW_SOCKET}"
-  fi
+  show_onboard_instructions
 fi
