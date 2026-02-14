@@ -87,6 +87,15 @@ Add this to your config (`~/.openclaw/openclaw.json`):
 - `files.memoryInnie` (string): custom innie memory filename (default: `MEMORY.innie.md`)
 - `files.memoryOutie` (string): custom outie memory filename (default: `MEMORY.outie.md`)
 
+## Slash Commands
+
+When enabled, the hook registers `/innie` and `/outie` commands that let you switch persona on the fly from any channel that supports slash commands (e.g., Telegram).
+
+- `/innie` — Switch to innie (work) persona
+- `/outie` — Switch to outie (personal) persona
+
+After switching, send `/new` to restart the session with the new persona. The command override takes priority over all activation modes until cleared.
+
 ## Requirements
 
 - `hooks.internal.entries.severance.enabled` must be set to `true`

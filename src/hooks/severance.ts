@@ -259,11 +259,17 @@ export type SeveranceDecisionParams = {
   runtimeChannel?: string;
   env?: NodeJS.ProcessEnv;
   locationStateDir?: string;
+  personaOverride?: SeverancePersona;
 };
 
 export async function decideSeverancePersona(
   params: SeveranceDecisionParams,
 ): Promise<SeveranceDecision | null> {
+  // Command-based override (/innie, /outie) takes priority over all modes
+  if (params.personaOverride === "innie" || params.personaOverride === "outie") {
+    return { persona: params.personaOverride, reason: "command-override" };
+  }
+
   const activation = params.config?.activation;
   if (!activation?.mode) {
     return null;
@@ -415,6 +421,7 @@ export async function applySeveranceOverride(params: {
   runtimeChannel?: string;
   env?: NodeJS.ProcessEnv;
   locationStateDir?: string;
+  personaOverride?: SeverancePersona;
   log?: SeveranceLog;
 }): Promise<WorkspaceBootstrapFile[]> {
   const decision = await decideSeverancePersona({
@@ -424,6 +431,7 @@ export async function applySeveranceOverride(params: {
     runtimeChannel: params.runtimeChannel,
     env: params.env,
     locationStateDir: params.locationStateDir,
+    personaOverride: params.personaOverride,
   });
 
   if (!decision) {

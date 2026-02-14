@@ -234,6 +234,44 @@ describe("decideSeverancePersona", () => {
     expect(result?.persona).toBe("outie");
   });
 
+  // Command override
+  it("command-override: takes priority over all modes", async () => {
+    const result = await decideSeverancePersona({
+      config: { activation: { mode: "manual", persona: "outie" } },
+      personaOverride: "innie",
+    });
+    expect(result?.persona).toBe("innie");
+    expect(result?.reason).toBe("command-override");
+  });
+
+  it("command-override: outie overrides schedule", async () => {
+    const result = await decideSeverancePersona({
+      config: {
+        activation: {
+          mode: "schedule",
+          schedule: {
+            workHours: { start: "09:00", end: "17:00" },
+            workDays: [1, 2, 3, 4, 5],
+          },
+        },
+      },
+      userTimezone: "UTC",
+      now: new Date("2026-01-05T12:00:00Z"), // Monday work hours
+      personaOverride: "outie",
+    });
+    expect(result?.persona).toBe("outie");
+    expect(result?.reason).toBe("command-override");
+  });
+
+  it("command-override: undefined falls through to normal mode", async () => {
+    const result = await decideSeverancePersona({
+      config: { activation: { mode: "manual", persona: "outie" } },
+      personaOverride: undefined,
+    });
+    expect(result?.persona).toBe("outie");
+    expect(result?.reason).toBe("manual");
+  });
+
   // Manual mode
   it("manual: returns configured persona", async () => {
     const result = await decideSeverancePersona({

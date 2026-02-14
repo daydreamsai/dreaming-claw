@@ -2,8 +2,13 @@ import { isSubagentSessionKey } from "../../../routing/session-key.js";
 import { resolveHookConfig } from "../../config.js";
 import { isAgentBootstrapEvent, type HookHandler } from "../../hooks.js";
 import { applySeveranceOverride, resolveSeveranceConfigFromHook } from "../../severance.js";
+import { registerSeveranceCommands } from "./commands.js";
+import { readPersonaState } from "./persona-state.js";
 
 const HOOK_KEY = "severance";
+
+// Register /innie and /outie commands when this module is loaded
+registerSeveranceCommands();
 
 const severanceHook: HookHandler = async (event) => {
   if (!isAgentBootstrapEvent(event)) {
@@ -32,11 +37,15 @@ const severanceHook: HookHandler = async (event) => {
     return;
   }
 
+  // Check for persona override from /innie or /outie commands
+  const personaOverride = await readPersonaState();
+
   const updated = await applySeveranceOverride({
     files: context.bootstrapFiles,
     workspaceDir,
     config: severanceConfig,
     userTimezone: cfg?.agents?.defaults?.userTimezone,
+    personaOverride: personaOverride?.persona,
     log: {
       warn: (message) => console.warn(`[severance] ${message}`),
       debug: (message) => console.debug?.(`[severance] ${message}`),
