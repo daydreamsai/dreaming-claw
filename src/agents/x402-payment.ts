@@ -7,8 +7,6 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 
 const log = createSubsystemLogger("agent/x402");
 
-const log = createSubsystemLogger("agent/x402");
-
 const X402_PROVIDER_ID = "x402";
 const X402_PLUGIN_ID = "daydreams-x402-auth";
 const DEFAULT_ROUTER_ORIGIN = "https://ai.xgate.run";
@@ -178,7 +176,7 @@ function normalizeRouterUrl(value?: string): string {
 
 function resolvePluginConfig(cfg?: OpenClawConfig): { permitCapUsd: number; network: string } {
   const raw = cfg?.plugins?.entries?.[X402_PLUGIN_ID]?.config;
-  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const record = raw && typeof raw === "object" ? raw : {};
   const permitCapRaw = record.permitCap;
   const permitCapUsd =
     typeof permitCapRaw === "number" && Number.isFinite(permitCapRaw) && permitCapRaw > 0
@@ -344,7 +342,7 @@ async function signPermit(params: {
   const nonceValue = await fetchPermitNonce(
     chain,
     params.config.asset as `0x${string}`,
-    params.account.address as `0x${string}`,
+    params.account.address,
   );
 
   const domain = getPermitDomain(
