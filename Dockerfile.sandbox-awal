@@ -1,0 +1,38 @@
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Electron's native dependencies + xvfb for headless display + Node for npx awal
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    git \
+    jq \
+    libasound2 \
+    libatk-bridge2.0-0 \
+    libcairo2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libnss3 \
+    libpango-1.0-0 \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    nodejs \
+    npm \
+    python3 \
+    ripgrep \
+    xvfb \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY scripts/sandbox-awal-entrypoint.sh /usr/local/bin/openclaw-sandbox-awal
+RUN chmod +x /usr/local/bin/openclaw-sandbox-awal
+
+RUN useradd --create-home --shell /bin/bash sandbox
+USER sandbox
+WORKDIR /home/sandbox
+
+CMD ["openclaw-sandbox-awal"]
