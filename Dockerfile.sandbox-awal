@@ -25,6 +25,7 @@ RUN apt-get update \
     npm \
     python3 \
     ripgrep \
+    xauth \
     xvfb \
   && rm -rf /var/lib/apt/lists/*
 
