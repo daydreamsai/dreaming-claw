@@ -18,9 +18,8 @@ services:
     restart: unless-stopped
     command:
       [
-        "node",
-        "dist/index.js",
-        "gateway",
+        "bash",
+        "scripts/gateway-awal-entrypoint.sh",
         "--bind",
         "${OPENCLAW_GATEWAY_BIND:-lan}",
         "--port",

@@ -34,6 +34,7 @@ export OPENCLAW_BRIDGE_PORT="${OPENCLAW_BRIDGE_PORT:-18790}"
 export OPENCLAW_GATEWAY_BIND="${OPENCLAW_GATEWAY_BIND:-lan}"
 export OPENCLAW_IMAGE="$IMAGE_NAME"
 export OPENCLAW_DOCKER_APT_PACKAGES="${OPENCLAW_DOCKER_APT_PACKAGES:-}"
+export OPENCLAW_AWAL="${OPENCLAW_AWAL:-false}"
 export OPENCLAW_EXTRA_MOUNTS="$EXTRA_MOUNTS"
 export OPENCLAW_HOME_VOLUME="$HOME_VOLUME_NAME"
 
@@ -179,6 +180,7 @@ upsert_env "$ENV_FILE" \
 echo "==> Building Docker image: $IMAGE_NAME"
 docker build \
   --build-arg "OPENCLAW_DOCKER_APT_PACKAGES=${OPENCLAW_DOCKER_APT_PACKAGES}" \
+  --build-arg "OPENCLAW_AWAL=${OPENCLAW_AWAL}" \
   -t "$IMAGE_NAME" \
   -f "$ROOT_DIR/Dockerfile" \
   "$ROOT_DIR"
@@ -214,6 +216,41 @@ echo "Access from tailnet devices via the host's tailnet IP."
 echo "Config: $OPENCLAW_CONFIG_DIR"
 echo "Workspace: $OPENCLAW_WORKSPACE_DIR"
 echo "Token: $OPENCLAW_GATEWAY_TOKEN"
+
+# Awal wallet authentication (if awal was selected during onboarding)
+AWAL_EMAIL=""
+if [[ -f "$OPENCLAW_CONFIG_DIR/openclaw.json" ]]; then
+  AWAL_EMAIL="$(node -e "
+    const c = JSON.parse(require('fs').readFileSync('$OPENCLAW_CONFIG_DIR/openclaw.json','utf8'));
+    const e = c?.plugins?.entries?.['daydreams-x402-auth']?.config?.awalEmail;
+    if (e) process.stdout.write(e);
+  " 2>/dev/null || true)"
+fi
+
+if [[ -n "$AWAL_EMAIL" && "$OPENCLAW_AWAL" == "true" ]]; then
+  GATEWAY_CONTAINER="$(docker compose "${COMPOSE_ARGS[@]}" ps -q openclaw-gateway)"
+  if [[ -n "$GATEWAY_CONTAINER" ]]; then
+    echo ""
+    echo "==> Awal wallet authentication"
+    echo "Waiting for awal Electron daemon..."
+    for i in $(seq 1 30); do
+      if docker compose "${COMPOSE_ARGS[@]}" exec -T openclaw-gateway \
+        bash -c 'export DISPLAY=:1 && npx awal status --json 2>/dev/null | grep -q Running' 2>/dev/null; then
+        break
+      fi
+      sleep 2
+    done
+
+    echo "Sending OTP to $AWAL_EMAIL..."
+    docker compose "${COMPOSE_ARGS[@]}" exec openclaw-gateway \
+      bash -c "export DISPLAY=:1 && npx awal auth login $AWAL_EMAIL"
+
+    echo ""
+    echo "Check your email ($AWAL_EMAIL) for the 6-digit code, then run:"
+    echo "  ${COMPOSE_HINT} exec openclaw-gateway bash -c 'export DISPLAY=:1 && npx awal auth verify <flowId> <code>'"
+  fi
+fi
+
 echo ""
 echo "Commands:"
 echo "  ${COMPOSE_HINT} logs -f openclaw-gateway"

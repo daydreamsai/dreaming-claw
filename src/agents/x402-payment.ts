@@ -1,4 +1,6 @@
 import type { StreamFn } from "@mariozechner/pi-agent-core";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { join } from "node:path";
 import { createPublicClient, createWalletClient, http, type Account, type Chain } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia, mainnet } from "viem/chains";
@@ -62,8 +64,7 @@ interface SawClient {
 
 type SigningBackend =
   | { mode: "key"; wallet: ReturnType<typeof createWalletClient>; account: Account }
-  | { mode: "saw"; client: SawClient; ownerAddress: `0x${string}` }
-  | { mode: "awal"; email: string };
+  | { mode: "saw"; client: SawClient; ownerAddress: `0x${string}` };
 
 function parseSawConfig(apiKey: string | undefined): SawConfig | null {
   if (!apiKey) {
@@ -80,11 +81,7 @@ function getOwnerAddress(backend: SigningBackend): `0x${string}` {
   if (backend.mode === "key") {
     return backend.account.address;
   }
-  if (backend.mode === "saw") {
-    return backend.ownerAddress;
-  }
-  // awal mode — address resolved during signing
-  return "0x0000000000000000000000000000000000000000";
+  return backend.ownerAddress;
 }
 
 const USDC_ADDRESSES: Record<string, `0x${string}`> = {
@@ -98,6 +95,18 @@ const CHAINS: Record<string, Chain> = {
   "eip155:84532": baseSepolia,
   "eip155:1": mainnet,
 };
+
+// Shared public client per chain to avoid rate limits from creating new clients
+const PUBLIC_CLIENT_CACHE = new Map<string, ReturnType<typeof createPublicClient>>();
+function getPublicClient(chain: Chain): ReturnType<typeof createPublicClient> {
+  const key = String(chain.id);
+  let client = PUBLIC_CLIENT_CACHE.get(key);
+  if (!client) {
+    client = createPublicClient({ chain, transport: http() });
+    PUBLIC_CLIENT_CACHE.set(key, client);
+  }
+  return client;
+}
 
 const ERC2612_NONCES_ABI = [
   {
@@ -184,6 +193,129 @@ interface CachedPermit {
 
 const ROUTER_CONFIG_CACHE = new Map<string, RouterConfig>();
 const PERMIT_CACHE = new Map<string, CachedPermit>();
+
+// ---------------------------------------------------------------------------
+// awal ephemeral key: fund a local key from the awal wallet, then sign locally
+// ---------------------------------------------------------------------------
+
+const AWAL_KEY_FILE = join(process.env.HOME || "/home/node", ".openclaw", ".awal-ephemeral-key");
+
+// Minimum USDC balance (atomic units, 6 decimals) before we top up.
+// 2 USDC should cover several requests.
+const AWAL_MIN_BALANCE = 2_000_000n;
+// Amount to send from awal when topping up (matches awal per-request limit).
+const AWAL_TOPUP_AMOUNT = "2.5";
+
+let awalEphemeralPromise: Promise<{
+  account: ReturnType<typeof privateKeyToAccount>;
+  wallet: ReturnType<typeof createWalletClient>;
+  balanceUnits: string;
+}> | null = null;
+
+/**
+ * Resolve (or create + fund) an ephemeral private key backed by the awal
+ * wallet.  The key is persisted to disk so it survives gateway restarts
+ * within the same container.
+ */
+async function resolveAwalEphemeralKey(
+  chain: Chain,
+  _permitCap: string,
+  _network: string,
+): Promise<{
+  account: ReturnType<typeof privateKeyToAccount>;
+  wallet: ReturnType<typeof createWalletClient>;
+  balanceUnits: string;
+}> {
+  // Singleton — only resolve once per process
+  if (awalEphemeralPromise) {
+    return awalEphemeralPromise;
+  }
+  awalEphemeralPromise = (async () => {
+    // 1. Load or generate ephemeral key
+    let keyHex: `0x${string}`;
+    try {
+      const stored = await readFile(AWAL_KEY_FILE, "utf-8");
+      keyHex = stored.trim() as `0x${string}`;
+      if (!PRIVATE_KEY_REGEX.test(keyHex)) {
+        throw new Error("bad key");
+      }
+    } catch {
+      // Generate fresh key
+      const { generatePrivateKey } = await import("viem/accounts");
+      keyHex = generatePrivateKey();
+      await mkdir(join(AWAL_KEY_FILE, ".."), { recursive: true });
+      await writeFile(AWAL_KEY_FILE, keyHex, { mode: 0o600 });
+      log.info("awal ephemeral key generated");
+    }
+
+    const account = privateKeyToAccount(keyHex);
+    log.info("awal ephemeral key loaded", { address: account.address });
+
+    // 2. Check USDC balance on the ephemeral key
+    const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+    const publicClient = getPublicClient(chain);
+    const balance = await publicClient.readContract({
+      address: USDC_ADDRESS,
+      abi: [
+        {
+          name: "balanceOf",
+          type: "function",
+          stateMutability: "view",
+          inputs: [{ name: "account", type: "address" }],
+          outputs: [{ name: "", type: "uint256" }],
+        },
+      ],
+      functionName: "balanceOf",
+      args: [account.address],
+    });
+
+    log.info("awal ephemeral key USDC balance", {
+      address: account.address,
+      balance: String(balance),
+    });
+
+    // 3. Top up from awal if needed
+    let finalBalance = balance;
+    if (finalBalance < AWAL_MIN_BALANCE) {
+      log.info("awal ephemeral key underfunded, topping up via awal send", {
+        amount: AWAL_TOPUP_AMOUNT,
+        to: account.address,
+      });
+      const result = await runCommandWithTimeout(
+        ["npx", "awal", "send", AWAL_TOPUP_AMOUNT, account.address, "--json"],
+        { timeoutMs: 60_000, env: { ...process.env, DISPLAY: ":1" } },
+      );
+      if (result.code !== 0) {
+        throw new Error(`awal send failed (exit ${result.code}): ${result.stderr}`);
+      }
+      log.info("awal send complete", { stdout: result.stdout.trim() });
+      // Re-check balance after top-up
+      const newBalance = await publicClient.readContract({
+        address: USDC_ADDRESS,
+        abi: [
+          {
+            name: "balanceOf",
+            type: "function",
+            stateMutability: "view",
+            inputs: [{ name: "account", type: "address" }],
+            outputs: [{ name: "", type: "uint256" }],
+          },
+        ],
+        functionName: "balanceOf",
+        args: [account.address],
+      });
+      finalBalance = newBalance;
+    }
+
+    const wallet = createWalletClient({ account, chain, transport: http() });
+    return { account, wallet, balanceUnits: finalBalance.toString() };
+  })().catch((err) => {
+    // Reset so the next request retries (e.g. after awal auth is fixed)
+    awalEphemeralPromise = null;
+    throw err;
+  });
+  return awalEphemeralPromise;
+}
 
 function normalizePrivateKey(value: string | undefined): string | null {
   if (!value) {
@@ -334,7 +466,7 @@ async function fetchPermitNonce(
   token: `0x${string}`,
   owner: `0x${string}`,
 ): Promise<bigint> {
-  const publicClient = createPublicClient({ chain, transport: http() });
+  const publicClient = getPublicClient(chain);
   return await publicClient.readContract({
     address: token,
     abi: ERC2612_NONCES_ABI,
@@ -445,114 +577,34 @@ async function signPermitViaSaw(params: {
   };
 }
 
-async function signPermitViaAwal(params: {
-  config: RouterConfig;
-  permitCap: string;
-}): Promise<{ signature: string; nonce: string; deadline: string; ownerAddress: string }> {
-  const addressResult = await runCommandWithTimeout(["npx", "awal", "address", "--json"], {
-    timeoutMs: 10_000,
-    env: { DISPLAY: ":1" },
-  });
-  if (addressResult.code !== 0) {
-    throw new Error(`awal address failed: ${addressResult.stderr}`);
-  }
-  const { address } = JSON.parse(addressResult.stdout.trim()) as { address: string };
-
-  const chain = CHAINS[params.config.network] || base;
-  const chainId = Number.parseInt(params.config.network.split(":")[1] ?? "0", 10);
-  const deadline = Math.floor(Date.now() / 1000) + DEFAULT_VALIDITY_SECONDS;
-  const nonceValue = await fetchPermitNonce(
-    chain,
-    params.config.asset as `0x${string}`,
-    address as `0x${string}`,
-  );
-
-  log.info("signing permit via awal", {
-    owner: address,
-    spender: params.config.facilitatorSigner,
-    network: params.config.network,
-    nonce: nonceValue.toString(),
-  });
-
-  const signResult = await runCommandWithTimeout(
-    [
-      "npx",
-      "awal",
-      "x402",
-      "sign-permit",
-      "--chain-id",
-      chainId.toString(),
-      "--token",
-      params.config.asset,
-      "--name",
-      params.config.tokenName,
-      "--version",
-      params.config.tokenVersion,
-      "--spender",
-      params.config.facilitatorSigner,
-      "--value",
-      params.permitCap,
-      "--nonce",
-      nonceValue.toString(),
-      "--deadline",
-      deadline.toString(),
-      "--owner",
-      address,
-      "--json",
-    ],
-    { timeoutMs: 30_000, env: { DISPLAY: ":1" } },
-  );
-  if (signResult.code !== 0) {
-    throw new Error(`awal sign-permit failed: ${signResult.stderr}`);
-  }
-  const { signature } = JSON.parse(signResult.stdout.trim()) as { signature: string };
-
-  log.info("awal permit signed", { address, sigPrefix: signature.slice(0, 14) });
-
-  return {
-    signature,
-    nonce: nonceValue.toString(),
-    deadline: deadline.toString(),
-    ownerAddress: address,
-  };
-}
-
 async function createCachedPermit(params: {
   backend: SigningBackend;
   config: RouterConfig;
   permitCap: string;
 }): Promise<CachedPermit> {
   const signResult =
-    params.backend.mode === "awal"
-      ? await signPermitViaAwal({
+    params.backend.mode === "saw"
+      ? await signPermitViaSaw({
+          client: params.backend.client,
+          ownerAddress: params.backend.ownerAddress,
           config: params.config,
           permitCap: params.permitCap,
         })
-      : params.backend.mode === "key"
-        ? await signPermit({
-            wallet: params.backend.wallet,
-            account: params.backend.account,
-            config: params.config,
-            permitCap: params.permitCap,
-          })
-        : await signPermitViaSaw({
-            client: params.backend.client,
-            ownerAddress: params.backend.ownerAddress,
-            config: params.config,
-            permitCap: params.permitCap,
-          });
+      : await signPermit({
+          wallet: params.backend.wallet,
+          account: params.backend.account,
+          config: params.config,
+          permitCap: params.permitCap,
+        });
 
   const { signature, nonce, deadline } = signResult;
+  const owner = getOwnerAddress(params.backend);
 
-  // For awal mode, use the returned ownerAddress
-  const owner =
-    params.backend.mode === "awal"
-      ? ((signResult as { ownerAddress: string }).ownerAddress as `0x${string}`)
-      : getOwnerAddress(params.backend);
   const payload = {
     x402Version: 2,
     accepted: {
       scheme: "upto",
+      amount: params.permitCap,
       network: params.config.network,
       asset: params.config.asset,
       payTo: params.config.payTo,
@@ -562,14 +614,14 @@ async function createCachedPermit(params: {
       },
     },
     payload: {
+      signature,
       authorization: {
         from: owner,
         to: params.config.facilitatorSigner,
         value: params.permitCap,
-        validBefore: deadline,
         nonce,
+        validBefore: deadline,
       },
-      signature,
     },
   };
 
@@ -695,12 +747,31 @@ export function maybeWrapStreamFnWithX402Payment(params: {
 
   // Build signing backend — awal/SAW resolve the address lazily via their daemons
   let backendPromise: Promise<SigningBackend>;
+  // For awal ephemeral keys, cap the permit to the wallet balance
+  let effectivePermitCap = permitCap;
   if (awalConfig) {
-    log.info("x402 using awal backend", { email: awalConfig.email });
-    backendPromise = Promise.resolve({
-      mode: "awal",
-      email: awalConfig.email,
-    } satisfies SigningBackend);
+    // awal mode: the Coinbase hosted wallet can't directly sign "upto" permits
+    // for the xgate router.  Instead, generate an ephemeral local key and fund it
+    // from the awal wallet via `npx awal send`.  Then use the normal key backend.
+    log.info("x402 using awal backend (ephemeral key)", { email: awalConfig.email });
+    const chain = CHAINS[network] || base;
+    backendPromise = resolveAwalEphemeralKey(chain, permitCap, network).then(
+      ({ account: acct, wallet: w, balanceUnits }) => {
+        // Cap permit to actual wallet balance — xgate rejects permits exceeding balance
+        if (BigInt(balanceUnits) < BigInt(permitCap)) {
+          effectivePermitCap = balanceUnits;
+          log.info("x402 permit cap capped to wallet balance", {
+            permitCap,
+            effectivePermitCap: balanceUnits,
+          });
+        }
+        return {
+          mode: "key" as const,
+          wallet: w,
+          account: acct,
+        };
+      },
+    );
   } else if (sawConfig) {
     log.info("x402 using SAW backend", {
       wallet: sawConfig.walletName,
@@ -772,8 +843,11 @@ export function maybeWrapStreamFnWithX402Payment(params: {
       (!parsed && url.startsWith(routerUrl));
 
     if (!isRouterRequest || isConfigPath || isModelsPath) {
+      log.info("x402 fetch passthrough", { url, isRouterRequest, isConfigPath, isModelsPath });
       return baseFetch(input, init);
     }
+
+    log.info("x402 fetch intercepted", { url, pathname });
 
     // OpenAI-compatible providers omit /v1 prefix; rewrite for the router
     if (parsed && pathname === "/chat/completions") {
@@ -805,14 +879,34 @@ export function maybeWrapStreamFnWithX402Payment(params: {
     };
 
     try {
-      const permit = await resolvePermit({ backend, config: routerConfig, permitCap });
+      log.info("x402 resolving permit", {
+        permitCap: effectivePermitCap,
+        network: routerConfig.network,
+        payTo: routerConfig.payTo,
+      });
+      const permit = await resolvePermit({
+        backend,
+        config: routerConfig,
+        permitCap: effectivePermitCap,
+      });
+      log.info("x402 permit resolved, sending request", {
+        deadline: permit.deadline,
+        nonce: permit.nonce,
+        payloadDecoded: Buffer.from(permit.paymentSig, "base64").toString("utf-8").slice(0, 500),
+      });
       const response = await sendWithPermit(permit);
+      log.info("x402 response", { status: response.status, statusText: response.statusText });
 
       if (response.status !== 401 && response.status !== 402) {
         return response;
       }
 
+      const responseBody = await response.text();
       const paymentRequired = response.headers.get("PAYMENT-REQUIRED");
+      log.info("x402 got 401/402, retrying with refreshed permit", {
+        body: responseBody.slice(0, 500),
+        paymentRequiredHeader: paymentRequired?.slice(0, 200),
+      });
       const decoded = paymentRequired ? decodePaymentRequiredHeader(paymentRequired) : null;
       const requirement = decoded?.accepts?.[0];
       const maxAmountRequired = getRequirementMaxAmountRequired(requirement);
@@ -828,14 +922,15 @@ export function maybeWrapStreamFnWithX402Payment(params: {
         PERMIT_CACHE.clear();
       }
 
-      const refreshedCap = maxAmountRequired || permitCap;
+      const refreshedCap = maxAmountRequired || effectivePermitCap;
       const refreshed = await resolvePermit({
         backend,
         config: routerConfig,
         permitCap: refreshedCap,
       });
       return await sendWithPermit(refreshed);
-    } catch {
+    } catch (err) {
+      log.info("x402 payment flow error, falling back to baseFetch", { error: String(err) });
       return baseFetch(input, init);
     }
   };
