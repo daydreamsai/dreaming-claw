@@ -771,7 +771,7 @@ export function maybeWrapStreamFnWithX402Payment(params: {
       if (input && typeof (input as { url?: string }).url === "string") {
         return (input as { url: string }).url;
       }
-      return String(input as string);
+      return String(input as unknown);
     })();
     let parsed: URL | null = null;
     try {
