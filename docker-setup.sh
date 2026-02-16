@@ -242,12 +242,29 @@ if [[ -n "$AWAL_EMAIL" && "$OPENCLAW_AWAL" == "true" ]]; then
     done
 
     echo "Sending OTP to $AWAL_EMAIL..."
-    docker compose "${COMPOSE_ARGS[@]}" exec openclaw-gateway \
-      bash -c "export DISPLAY=:1 && npx awal auth login $AWAL_EMAIL"
+    LOGIN_OUTPUT="$(docker compose "${COMPOSE_ARGS[@]}" exec -T openclaw-gateway \
+      bash -c "export DISPLAY=:1 && npx awal auth login $AWAL_EMAIL" 2>&1)"
+    echo "$LOGIN_OUTPUT"
 
-    echo ""
-    echo "Check your email ($AWAL_EMAIL) for the 6-digit code, then run:"
-    echo "  ${COMPOSE_HINT} exec openclaw-gateway bash -c 'export DISPLAY=:1 && npx awal auth verify <flowId> <code>'"
+    # Extract flowId from login output (awal prints it as part of the response)
+    FLOW_ID="$(echo "$LOGIN_OUTPUT" | grep -oE '[0-9a-f-]{36}' | head -1)"
+
+    if [[ -n "$FLOW_ID" ]]; then
+      echo ""
+      echo "Check your email ($AWAL_EMAIL) for the 6-digit code."
+      read -rp "Enter OTP code: " OTP_CODE
+      if [[ -n "$OTP_CODE" ]]; then
+        docker compose "${COMPOSE_ARGS[@]}" exec -T openclaw-gateway \
+          bash -c "export DISPLAY=:1 && npx awal auth verify $FLOW_ID $OTP_CODE"
+      else
+        echo "No code entered. You can verify later with:"
+        echo "  ${COMPOSE_HINT} exec openclaw-gateway bash -c 'export DISPLAY=:1 && npx awal auth verify $FLOW_ID <code>'"
+      fi
+    else
+      echo ""
+      echo "Could not extract flowId. Check your email ($AWAL_EMAIL) for the 6-digit code, then run:"
+      echo "  ${COMPOSE_HINT} exec openclaw-gateway bash -c 'export DISPLAY=:1 && npx awal auth verify <flowId> <code>'"
+    fi
   fi
 fi
 
