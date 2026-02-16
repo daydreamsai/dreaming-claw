@@ -62,15 +62,14 @@ RUN if [ "$OPENCLAW_AWAL" = "true" ]; then \
     fi
 
 # Pre-install SAW binaries (opt-in via --build-arg OPENCLAW_AWAL=true)
-ARG SAW_VERSION=0.1.5
+# Only x86_64 Linux binaries are published; arm64 Docker hosts emulate via qemu.
+ARG SAW_VERSION=0.1.3
 ENV SAW_ROOT=/home/node/.saw
 RUN if [ "$OPENCLAW_AWAL" = "true" ]; then \
-      ARCH="$(uname -m)" \
-      && case "$ARCH" in x86_64|amd64) ARCH="x86_64" ;; arm64|aarch64) ARCH="arm64" ;; esac \
-      && ARCHIVE="saw-linux-${ARCH}.tar.gz" \
+      ARCHIVE="saw-linux-x86_64.tar.gz" \
       && URL="https://github.com/daydreamsai/agent-wallet/releases/download/v${SAW_VERSION}/${ARCHIVE}" \
       && mkdir -p "${SAW_ROOT}/bin" \
-      && curl -sSL -o /tmp/saw.tar.gz "$URL" \
+      && curl -sSL -f -o /tmp/saw.tar.gz "$URL" \
       && tar xzf /tmp/saw.tar.gz -C "${SAW_ROOT}/bin" \
       && chmod 755 "${SAW_ROOT}/bin/saw" "${SAW_ROOT}/bin/saw-daemon" \
       && rm -f /tmp/saw.tar.gz \

@@ -3,15 +3,19 @@ set -euo pipefail
 
 export DISPLAY=:1
 export AWAL_HOME="${AWAL_HOME:-/home/node}"
-export XDG_CONFIG_HOME="${AWAL_HOME}/.config"
-export XDG_CACHE_HOME="${AWAL_HOME}/.cache"
+# Point XDG dirs under .openclaw so awal auth state survives container recreation.
+export XDG_CONFIG_HOME="${AWAL_HOME}/.openclaw/.config"
+export XDG_CACHE_HOME="${AWAL_HOME}/.openclaw/.cache"
 
 AWAL_DIR="${AWAL_HOME}/.local/share/awal/server"
 AWAL_LOG="/tmp/awal-electron.log"
 AWAL_INIT_TIMEOUT="${AWAL_INIT_TIMEOUT:-15}"
 
-# SAW paths — running as node user inside Docker (no sudo)
-SAW_ROOT="${SAW_ROOT:-${AWAL_HOME}/.saw}"
+# SAW paths — store keys under .openclaw so they survive container recreation.
+# The binaries stay in ~/.saw/bin (baked into the image), but the runtime data
+# (keys, config, socket) lives under the mounted config volume.
+SAW_BIN_DIR="${AWAL_HOME}/.saw/bin"
+SAW_ROOT="${SAW_ROOT:-${AWAL_HOME}/.openclaw/.saw}"
 SAW_SOCKET="${SAW_SOCKET:-${SAW_ROOT}/saw.sock}"
 SAW_WALLET="${SAW_WALLET:-main}"
 SAW_CHAIN="${SAW_CHAIN:-evm}"
@@ -22,8 +26,8 @@ export SAW_SOCKET
 # ── SAW daemon ─────────────────────────────────────────────────────────────
 
 start_saw() {
-  local saw_bin="${SAW_ROOT}/bin/saw-daemon"
-  local saw_cli="${SAW_ROOT}/bin/saw"
+  local saw_bin="${SAW_BIN_DIR}/saw-daemon"
+  local saw_cli="${SAW_BIN_DIR}/saw"
   if [ ! -x "${saw_bin}" ]; then
     echo "[gateway-awal] SAW daemon not installed at ${saw_bin}, skipping"
     return 1

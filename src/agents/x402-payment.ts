@@ -700,7 +700,7 @@ export function maybeWrapStreamFnWithX402Payment(params: {
     // awal mode: awal funds the SAW wallet, SAW handles signing.
     // The SAW daemon is started by the entrypoint script; we just need
     // to connect to it and fund it from awal on the first request.
-    const sawSocket = process.env.SAW_SOCKET || "/home/node/.saw/saw.sock";
+    const sawSocket = process.env.SAW_SOCKET || "/home/node/.openclaw/.saw/saw.sock";
     const sawWallet = process.env.SAW_WALLET || "main";
     log.info("x402 using awal+SAW backend", {
       email: awalConfig.email,
