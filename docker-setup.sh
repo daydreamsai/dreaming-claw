@@ -173,6 +173,7 @@ upsert_env "$ENV_FILE" \
   OPENCLAW_GATEWAY_BIND \
   OPENCLAW_GATEWAY_TOKEN \
   OPENCLAW_IMAGE \
+  OPENCLAW_AWAL \
   OPENCLAW_EXTRA_MOUNTS \
   OPENCLAW_HOME_VOLUME \
   OPENCLAW_DOCKER_APT_PACKAGES
@@ -195,6 +196,27 @@ echo "  - Tailscale exposure: Off"
 echo "  - Install Gateway daemon: No"
 echo ""
 docker compose "${COMPOSE_ARGS[@]}" run --rm openclaw-cli onboard --no-install-daemon
+
+# After onboarding, detect if awal was selected and rebuild if needed
+if [[ "$OPENCLAW_AWAL" != "true" && -f "$OPENCLAW_CONFIG_DIR/openclaw.json" ]]; then
+  DETECTED_AWAL="$(node -e "
+    const c = JSON.parse(require('fs').readFileSync('$OPENCLAW_CONFIG_DIR/openclaw.json','utf8'));
+    if (c?.plugins?.entries?.['daydreams-x402-auth']?.config?.awalEmail) process.stdout.write('true');
+  " 2>/dev/null || true)"
+  if [[ "$DETECTED_AWAL" == "true" ]]; then
+    echo ""
+    echo "==> Awal wallet detected — rebuilding image with awal+SAW support"
+    OPENCLAW_AWAL="true"
+    export OPENCLAW_AWAL
+    upsert_env "$ENV_FILE" OPENCLAW_AWAL
+    docker build \
+      --build-arg "OPENCLAW_DOCKER_APT_PACKAGES=${OPENCLAW_DOCKER_APT_PACKAGES}" \
+      --build-arg "OPENCLAW_AWAL=true" \
+      -t "$IMAGE_NAME" \
+      -f "$ROOT_DIR/Dockerfile" \
+      "$ROOT_DIR"
+  fi
+fi
 
 echo ""
 echo "==> Provider setup (optional)"
@@ -265,6 +287,33 @@ if [[ -n "$AWAL_EMAIL" && "$OPENCLAW_AWAL" == "true" ]]; then
       echo "Could not extract flowId. Check your email ($AWAL_EMAIL) for the 6-digit code, then run:"
       echo "  ${COMPOSE_HINT} exec openclaw-gateway bash -c 'export DISPLAY=:1 && npx awal auth verify <flowId> <code>'"
     fi
+  fi
+fi
+
+echo ""
+echo "==> Pairing"
+echo "Send a message to the bot on Telegram/Discord/etc."
+echo "The bot will reply with a pairing code."
+echo "Enter it below to approve, or skip to do it later."
+echo ""
+read -rp "Pairing code (or press Enter to skip): " PAIRING_CODE
+if [[ -n "$PAIRING_CODE" ]]; then
+  # Detect which channel was configured
+  PAIRING_CHANNEL="$(node -e "
+    const c = JSON.parse(require('fs').readFileSync('$OPENCLAW_CONFIG_DIR/openclaw.json','utf8'));
+    const ch = c?.channels;
+    if (ch?.telegram?.botToken) process.stdout.write('telegram');
+    else if (ch?.discord?.botToken) process.stdout.write('discord');
+    else if (ch?.whatsapp) process.stdout.write('whatsapp');
+  " 2>/dev/null || true)"
+  if [[ -n "$PAIRING_CHANNEL" ]]; then
+    echo "Approving pairing for ${PAIRING_CHANNEL}..."
+    docker compose "${COMPOSE_ARGS[@]}" exec -T openclaw-gateway \
+      node dist/index.js pairing approve "$PAIRING_CHANNEL" "$PAIRING_CODE" \
+      --token "$OPENCLAW_GATEWAY_TOKEN" || true
+  else
+    echo "Could not detect channel. Approve manually:"
+    echo "  ${COMPOSE_HINT} exec openclaw-gateway node dist/index.js pairing approve <channel> $PAIRING_CODE --token \"$OPENCLAW_GATEWAY_TOKEN\""
   fi
 fi
 
