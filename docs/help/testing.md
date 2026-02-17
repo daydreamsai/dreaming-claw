@@ -329,6 +329,7 @@ These run `pnpm test:live` inside the repo Docker image, mounting your local con
 - Onboarding wizard (TTY, full scaffolding): `pnpm test:docker:onboard` (script: `scripts/e2e/onboard-docker.sh`)
 - Gateway networking (two containers, WS auth + health): `pnpm test:docker:gateway-network` (script: `scripts/e2e/gateway-network-docker.sh`)
 - Plugins (custom extension load + registry smoke): `pnpm test:docker:plugins` (script: `scripts/e2e/plugins-docker.sh`)
+- Plugin + Daydreams router loop (run both in sequence): `pnpm test:docker:plugins-dreams-router:loop` (alias: `pnpm test:docker:plugins-live-router:loop`; script: `scripts/e2e/plugins-live-router-loop.ts`)
 
 Useful env vars:
 
@@ -337,6 +338,12 @@ Useful env vars:
 - `OPENCLAW_PROFILE_FILE=...` (default: `~/.profile`) mounted to `/home/node/.profile` and sourced before running tests
 - `OPENCLAW_LIVE_GATEWAY_MODELS=...` / `OPENCLAW_LIVE_MODELS=...` to narrow the run
 - `OPENCLAW_LIVE_REQUIRE_PROFILE_KEYS=1` to ensure creds come from the profile store (not env)
+- `OPENCLAW_E2E_LOOP_COUNT=<n>` to repeat `plugins` + `live-gateway` runs (default: `1`)
+- `OPENCLAW_E2E_LOOP_FOREVER=1` to run the plugin/live-router loop until manually stopped
+- `OPENCLAW_E2E_LOOP_SLEEP_SECONDS=<n>` delay between loop iterations
+- `OPENCLAW_E2E_LOOP_CONTINUE_ON_FAILURE=1` to keep looping and return non-zero at the end if any iteration fails
+- Loop defaults to Daydreams Router: `OPENCLAW_LIVE_GATEWAY_PROVIDERS=x402` and `OPENCLAW_LIVE_GATEWAY_MODELS=x402/auto`
+- Override Daydreams loop target without affecting global live envs: `OPENCLAW_E2E_DREAMS_ROUTER_PROVIDERS=...` and `OPENCLAW_E2E_DREAMS_ROUTER_MODELS=...`
 
 ## Docs sanity
 
