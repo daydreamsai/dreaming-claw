@@ -45,6 +45,7 @@ set -euo pipefail
 #   SAW_GATEWAY_USER=<user>               # user to grant socket access (auto-detect if empty)
 #   SAW_SKIP_KEYGEN=1|0                   # skip key generation
 #   SAW_POLICY_TEMPLATE=conservative|none  # default policy template
+#   SAW_ALLOWLIST_ADDRESS=<evm-address>   # defaults to Dreams Router facilitator; set empty to keep allowlist empty
 
 # ── OpenClaw variables ──────────────────────────────────────────────────────
 
@@ -90,6 +91,8 @@ SAW_AGENT_GROUP="${SAW_AGENT_GROUP:-saw-agent}"
 SAW_GATEWAY_USER="${SAW_GATEWAY_USER:-}"
 SAW_SKIP_KEYGEN="${SAW_SKIP_KEYGEN:-0}"
 SAW_POLICY_TEMPLATE="${SAW_POLICY_TEMPLATE:-conservative}"
+SAW_DREAMS_ROUTER_FACILITATOR="0x1363C7Ff51CcCE10258A7F7bddd63bAaB6aAf678"
+SAW_ALLOWLIST_ADDRESS="${SAW_ALLOWLIST_ADDRESS-$SAW_DREAMS_ROUTER_FACILITATOR}"
 
 # ── SAW functions ───────────────────────────────────────────────────────────
 
@@ -308,10 +311,19 @@ saw_generate_key() {
 
 saw_write_policy() {
   local policy_file="${SAW_ROOT}/policy.yaml"
+  local allowlist_yaml="[]"
 
   if [[ "$SAW_POLICY_TEMPLATE" == "none" ]]; then
     echo "==> SAW: skipping policy template (SAW_POLICY_TEMPLATE=none)"
     return 0
+  fi
+
+  if [[ -n "$SAW_ALLOWLIST_ADDRESS" ]]; then
+    if [[ ! "$SAW_ALLOWLIST_ADDRESS" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+      echo "ERROR: SAW_ALLOWLIST_ADDRESS must be an EVM address (0x + 40 hex chars), got: $SAW_ALLOWLIST_ADDRESS" >&2
+      exit 1
+    fi
+    allowlist_yaml="[\"${SAW_ALLOWLIST_ADDRESS}\"]"
   fi
 
   local _policy_exists=0
@@ -336,7 +348,7 @@ wallets:
     allowed_chains: [8453]
     max_tx_value_eth: 0.01
     allow_contract_calls: false
-    allowlist_addresses: []
+    allowlist_addresses: ${allowlist_yaml}
     rate_limit_per_minute: 10
 POLICY_EOF
   else
@@ -347,15 +359,30 @@ wallets:
     allowed_chains: [8453]
     max_tx_value_eth: 0.01
     allow_contract_calls: false
-    allowlist_addresses: []
+    allowlist_addresses: ${allowlist_yaml}
     rate_limit_per_minute: 10
 POLICY_EOF
   fi
+
+  if [[ "$SAW_OS_NAME" == "macos" ]]; then
+    "$SAW_BIN_DIR/saw" policy validate --root "$SAW_ROOT" >/dev/null
+  else
+    sudo "$SAW_BIN_DIR/saw" policy validate --root "$SAW_ROOT" >/dev/null
+  fi
+  echo "==> SAW: policy validated"
+
   echo ""
-  echo "    NOTE: The default policy has an EMPTY allowlist."
-  echo "    SAW will deny all signing requests until you add the x402"
-  echo "    facilitator address to allowlist_addresses in:"
-  echo "      ${policy_file}"
+  if [[ -n "$SAW_ALLOWLIST_ADDRESS" ]]; then
+    echo "    NOTE: Added allowlist address ${SAW_ALLOWLIST_ADDRESS}"
+    echo "    (Dreams Router x402 facilitator by default)."
+    echo "    Override with SAW_ALLOWLIST_ADDRESS=<evm-address>."
+    echo "    Set SAW_ALLOWLIST_ADDRESS='' to keep allowlist empty."
+  else
+    echo "    NOTE: The default policy has an EMPTY allowlist."
+    echo "    SAW will deny all signing requests until you add the x402"
+    echo "    facilitator address to allowlist_addresses in:"
+    echo "      ${policy_file}"
+  fi
   echo ""
 }
 

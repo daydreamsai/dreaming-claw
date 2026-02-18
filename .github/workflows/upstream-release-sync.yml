@@ -1,0 +1,147 @@
+name: Upstream Release Sync
+
+on:
+  schedule:
+    - cron: "27 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream tag to sync (optional, defaults to latest stable release)"
+        required: false
+        type: string
+
+permissions: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve upstream release
+        id: release
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const manualTag = context.payload?.inputs?.tag?.trim();
+            if (manualTag) {
+              core.info(`Using workflow-dispatch tag: ${manualTag}`);
+              core.setOutput("tag", manualTag);
+              return;
+            }
+
+            const release = await github.rest.repos.getLatestRelease({
+              owner: "openclaw",
+              repo: "openclaw",
+            });
+            if (!release?.data?.tag_name) {
+              core.setFailed("No upstream stable release tag found.");
+              return;
+            }
+
+            core.info(`Latest upstream stable release: ${release.data.tag_name}`);
+            core.setOutput("tag", release.data.tag_name);
+            core.setOutput("html_url", release.data.html_url || "");
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Prepare sync branch
+        id: sync
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TAG}" ]; then
+            echo "Missing release tag."
+            exit 1
+          fi
+
+          SAFE_TAG="${TAG//\//-}"
+          BRANCH="sync/upstream-release-${SAFE_TAG}"
+          TAG_REF="refs/tags/upstream-sync-${SAFE_TAG}"
+
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/openclaw/openclaw.git
+          else
+            git remote add upstream https://github.com/openclaw/openclaw.git
+          fi
+          git fetch --no-tags origin main
+          git fetch --no-tags upstream main
+          git fetch upstream "refs/tags/${TAG}:${TAG_REF}"
+
+          if git merge-base --is-ancestor "${TAG_REF}" "origin/main"; then
+            echo "Upstream tag ${TAG} is already reachable from origin/main."
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git checkout -B "${BRANCH}" "origin/main"
+          git merge --no-ff --no-edit "${TAG_REF}"
+          git push --force-with-lease origin "${BRANCH}"
+
+          echo "needs_sync=true" >> "$GITHUB_OUTPUT"
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update pull request
+        if: steps.sync.outputs.needs_sync == 'true'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          TAG_URL: ${{ steps.release.outputs.html_url }}
+          BRANCH: ${{ steps.sync.outputs.branch }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const head = `${owner}:${process.env.BRANCH}`;
+            const title = `chore: sync upstream ${process.env.TAG}`;
+            const releaseUrl = process.env.TAG_URL || `https://github.com/openclaw/openclaw/releases/tag/${process.env.TAG}`;
+            const body = [
+              `Automated sync from upstream stable release \`${process.env.TAG}\`.`,
+              "",
+              `Upstream release: ${releaseUrl}`,
+              "",
+              "This PR was created by `.github/workflows/upstream-release-sync.yml`.",
+            ].join("\n");
+
+            const existing = await github.rest.pulls.list({
+              owner,
+              repo,
+              state: "open",
+              base: "main",
+              head,
+              per_page: 1,
+            });
+
+            if (existing.data.length > 0) {
+              const pull = existing.data[0];
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: pull.number,
+                title,
+                body,
+              });
+              core.info(`Updated existing PR #${pull.number}`);
+              return;
+            }
+
+            const created = await github.rest.pulls.create({
+              owner,
+              repo,
+              base: "main",
+              head: process.env.BRANCH,
+              title,
+              body,
+            });
+            core.info(`Created PR #${created.data.number}`);
