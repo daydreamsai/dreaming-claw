@@ -313,6 +313,61 @@ function normalizeNetwork(value: string): string | null {
   return trimmed;
 }
 
+function normalizeAddress(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return /^0x[0-9a-fA-F]{40}$/.test(trimmed) ? trimmed : null;
+}
+
+async function resolveSawAddress(walletName: string, socketPath: string): Promise<string | null> {
+  try {
+    const { createSawClient } = await import("@daydreamsai/saw");
+    const client = createSawClient({ wallet: walletName, socketPath });
+    const address = await client.getAddress();
+    return normalizeAddress(address);
+  } catch {
+    return null;
+  }
+}
+
+async function resolveKeyAddress(privateKey: string): Promise<string | null> {
+  try {
+    const { privateKeyToAccount } = await import("viem/accounts");
+    return normalizeAddress(privateKeyToAccount(privateKey as `0x${string}`).address);
+  } catch {
+    return null;
+  }
+}
+
+function buildFundingNote(address: string | null, network: string): string {
+  const networkHint =
+    network === "eip155:8453" ? "USDC on Base (eip155:8453)" : `USDC on ${network}`;
+  if (address) {
+    return [
+      `This is your address: ${address}`,
+      `Fill it with ${networkHint} to start making requests.`,
+    ].join("\n");
+  }
+  return `Fill your x402 wallet with ${networkHint} to start making requests.`;
+}
+
+async function showFundingStep(
+  ctx: ProviderAuthContext,
+  address: string | null,
+  network: string,
+): Promise<void> {
+  await ctx.prompter.note(buildFundingNote(address, network), "Fund wallet");
+  const continueSetup = await ctx.prompter.confirm({
+    message: "Continue setup after saving this address?",
+    initialValue: true,
+  });
+  if (!continueSetup) {
+    throw new Error("Setup cancelled. Fund the wallet, then run onboarding again.");
+  }
+}
+
 const x402Plugin = {
   id: PLUGIN_ID,
   name: "Daydreams Router (x402) Auth",
@@ -383,6 +438,14 @@ const x402Plugin = {
             });
             const network = normalizeNetwork(String(networkInput)) ?? DEFAULT_NETWORK;
             const selectedDefaultModelRef = await promptDefaultModelRef(ctx);
+            const fundingAddress = await resolveSawAddress(walletName, socketPath);
+            if (!fundingAddress) {
+              throw new Error(
+                `Could not resolve SAW wallet address for "${walletName}" via socket "${socketPath}". ` +
+                  "Ensure the SAW daemon is running and the wallet exists, then re-run onboarding.",
+              );
+            }
+            await showFundingStep(ctx, fundingAddress, network);
 
             const existingPluginConfig =
               ctx.config.plugins?.entries?.[PLUGIN_ID]?.config &&
@@ -495,6 +558,8 @@ const x402Plugin = {
             });
             const network = normalizeNetwork(String(networkInput)) ?? DEFAULT_NETWORK;
             const selectedDefaultModelRef = await promptDefaultModelRef(ctx);
+            const fundingAddress = await resolveKeyAddress(normalizedKey);
+            await showFundingStep(ctx, fundingAddress, network);
 
             const existingPluginConfig =
               ctx.config.plugins?.entries?.[PLUGIN_ID]?.config &&
