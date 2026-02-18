@@ -55,7 +55,7 @@ OPENCLAW_ONBOARD_ARGS="${OPENCLAW_ONBOARD_ARGS:-}"  # resolved after TTY detecti
 OPENCLAW_NPM_SCRIPT_SHELL="${OPENCLAW_NPM_SCRIPT_SHELL:-}"
 
 if [[ -z "$OPENCLAW_SPEC" && -z "$OPENCLAW_REF" && -z "$OPENCLAW_BRANCH" ]]; then
-  OPENCLAW_REF="v2026.2.16.daydreams.2"
+  OPENCLAW_REF="v2026.2.15.daydreams.1"
 fi
 
 if [[ -n "$OPENCLAW_SPEC" && ( -n "$OPENCLAW_REF" || -n "$OPENCLAW_BRANCH" ) ]]; then
