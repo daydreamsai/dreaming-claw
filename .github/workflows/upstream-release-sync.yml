@@ -247,15 +247,23 @@ jobs:
               return;
             }
 
-            const created = await github.rest.pulls.create({
-              owner, repo, base: "main", head: process.env.BRANCH,
-              title, body, draft: true,
-            });
-            await github.rest.issues.addLabels({
-              owner, repo, issue_number: created.data.number,
-              labels: ["upstream-sync"],
-            });
-            core.info(`Created draft PR #${created.data.number}`);
+            try {
+              const created = await github.rest.pulls.create({
+                owner, repo, base: "main", head: process.env.BRANCH,
+                title, body, draft: true,
+              });
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: created.data.number,
+                labels: ["upstream-sync"],
+              });
+              core.info(`Created draft PR #${created.data.number}`);
+            } catch (error) {
+              if (error?.status === 422 && String(error?.message || "").includes("No commits between")) {
+                core.warning(`Skipping draft PR creation: no commits between main and ${process.env.BRANCH}.`);
+                return;
+              }
+              throw error;
+            }
 
       - name: Open or update pull request
         if: steps.sync.outputs.needs_sync == 'true'
@@ -327,15 +335,23 @@ jobs:
               return;
             }
 
-            const created = await github.rest.pulls.create({
-              owner, repo, base: "main", head: process.env.BRANCH,
-              title, body,
-            });
-            await github.rest.issues.addLabels({
-              owner, repo, issue_number: created.data.number,
-              labels: ["upstream-sync"],
-            });
-            core.info(`Created PR #${created.data.number}`);
+            try {
+              const created = await github.rest.pulls.create({
+                owner, repo, base: "main", head: process.env.BRANCH,
+                title, body,
+              });
+              await github.rest.issues.addLabels({
+                owner, repo, issue_number: created.data.number,
+                labels: ["upstream-sync"],
+              });
+              core.info(`Created PR #${created.data.number}`);
+            } catch (error) {
+              if (error?.status === 422 && String(error?.message || "").includes("No commits between")) {
+                core.warning(`Skipping PR creation: no commits between main and ${process.env.BRANCH}.`);
+                return;
+              }
+              throw error;
+            }
 
       - name: Close resolved conflict issues
         if: steps.sync.outputs.needs_sync == 'true'
