@@ -2,7 +2,7 @@ name: Upstream Release Sync
 
 on:
   schedule:
-    - cron: "27 */6 * * *"
+    - cron: "27 6 * * *" # daily at 06:27 UTC
   workflow_dispatch:
     inputs:
       tag:
@@ -87,11 +87,59 @@ jobs:
             exit 0
           fi
 
+          # Capture upstream commit summary before merge attempt
+          UPSTREAM_LOG=$(git log --oneline "origin/main..${TAG_REF}" | head -30)
+          UPSTREAM_COUNT=$(git rev-list --count "origin/main..${TAG_REF}")
+          {
+            echo "upstream_log<<EOF"
+            echo "${UPSTREAM_LOG}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "upstream_count=${UPSTREAM_COUNT}" >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --exit-code --heads origin "${BRANCH}" >/dev/null 2>&1; then
+            echo "Remote branch ${BRANCH} already exists; skipping branch overwrite."
+            git fetch --no-tags origin "refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+
+            if git cat-file -e "origin/${BRANCH}:.upstream-sync-pending" 2>/dev/null; then
+              echo "Branch still has .upstream-sync-pending marker; keeping conflict PR flow."
+              echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+              echo "merge_conflict=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if git merge-base --is-ancestor "${TAG_REF}" "origin/${BRANCH}"; then
+              echo "Branch already contains upstream tag ${TAG}; updating/keeping PR only."
+              echo "needs_sync=true" >> "$GITHUB_OUTPUT"
+              echo "merge_conflict=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "Branch exists but does not contain ${TAG}; leaving branch untouched."
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+            echo "merge_conflict=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           git checkout -B "${BRANCH}" "origin/main"
           if ! git merge --no-ff --no-edit "${TAG_REF}"; then
             mapfile -t CONFLICT_FILES < <(git diff --name-only --diff-filter=U)
             git merge --abort || true
-            git push --force-with-lease origin "${BRANCH}"
+
+            # Create a metadata commit so the branch differs from main
+            cat > .upstream-sync-pending <<MARKER
+          upstream_tag: ${TAG}
+          status: conflict
+          created: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          This file was created by the upstream-release-sync workflow.
+          The merge of upstream tag ${TAG} into main produced conflicts.
+          Resolve them, delete this file, and push to this branch.
+          MARKER
+            git add .upstream-sync-pending
+            git commit -m "chore: mark pending upstream sync for ${TAG} (conflicts)"
+
+            git push -u origin "${BRANCH}"
 
             echo "needs_sync=false" >> "$GITHUB_OUTPUT"
             echo "merge_conflict=true" >> "$GITHUB_OUTPUT"
@@ -105,12 +153,12 @@ jobs:
             exit 0
           fi
 
-          git push --force-with-lease origin "${BRANCH}"
+          git push -u origin "${BRANCH}"
 
           echo "needs_sync=true" >> "$GITHUB_OUTPUT"
           echo "merge_conflict=false" >> "$GITHUB_OUTPUT"
 
-      - name: Open or update conflict issue
+      - name: Open or update draft PR (conflicts)
         if: steps.sync.outputs.merge_conflict == 'true'
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
@@ -118,13 +166,16 @@ jobs:
           TAG_URL: ${{ steps.release.outputs.html_url }}
           BRANCH: ${{ steps.sync.outputs.branch }}
           CONFLICT_FILES: ${{ steps.sync.outputs.conflict_files }}
+          UPSTREAM_LOG: ${{ steps.sync.outputs.upstream_log }}
+          UPSTREAM_COUNT: ${{ steps.sync.outputs.upstream_count }}
           RUN_ID: ${{ github.run_id }}
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
+            const head = `${owner}:${process.env.BRANCH}`;
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${process.env.RUN_ID}`;
-            const title = `chore: manual upstream sync required (${process.env.TAG})`;
+            const title = `chore: sync upstream ${process.env.TAG}`;
             const releaseUrl =
               process.env.TAG_URL || `https://github.com/openclaw/openclaw/releases/tag/${process.env.TAG}`;
             const conflictFiles = (process.env.CONFLICT_FILES || "")
@@ -135,54 +186,76 @@ jobs:
               conflictFiles.length > 0
                 ? conflictFiles.map((file) => `- \`${file}\``).join("\n")
                 : "- (Unable to detect conflicted files from merge output)";
+            const upstreamLog = process.env.UPSTREAM_LOG || "(unable to retrieve)";
+            const upstreamCount = process.env.UPSTREAM_COUNT || "?";
 
             const body = [
-              `Automated upstream sync for \`${process.env.TAG}\` hit merge conflicts.`,
+              `> **Status: merge conflicts — manual resolution required**`,
               "",
-              `Upstream release: ${releaseUrl}`,
-              `Sync branch: \`${process.env.BRANCH}\``,
-              `Workflow run: ${runUrl}`,
+              `Automated sync from upstream stable release \`${process.env.TAG}\` hit merge conflicts.`,
               "",
-              "**Conflicted files**",
+              `| | |`,
+              `|---|---|`,
+              `| **Upstream release** | ${releaseUrl} |`,
+              `| **Sync branch** | \`${process.env.BRANCH}\` |`,
+              `| **Workflow run** | ${runUrl} |`,
+              "",
+              "## Conflicted files",
               filesBody,
               "",
-              "**Suggested resolution**",
-              "```bash",
-              `git fetch origin main && git fetch upstream --tags`,
-              `git checkout -B ${process.env.BRANCH} origin/main`,
-              `git merge --no-ff --no-edit refs/tags/${process.env.TAG}`,
-              "# resolve conflicts",
-              `git push -u origin ${process.env.BRANCH}`,
+              `## Upstream changes (${upstreamCount} commits)`,
               "```",
+              upstreamLog,
+              "```",
+              "",
+              "## Resolution",
+              "```bash",
+              `git fetch origin ${process.env.BRANCH} && git fetch upstream --tags`,
+              `git checkout -B ${process.env.BRANCH} origin/${process.env.BRANCH}`,
+              `git merge --no-ff --no-edit refs/tags/${process.env.TAG}`,
+              "# resolve conflicts, then:",
+              `git rm .upstream-sync-pending || true`,
+              `git commit`,
+              `git push origin ${process.env.BRANCH}`,
+              "```",
+              "Mark this PR as **Ready for review** once conflicts are resolved.",
+              "",
+              "---",
+              "This PR was created by `.github/workflows/upstream-release-sync.yml`.",
             ].join("\n");
 
-            const existing = await github.paginate(github.rest.issues.listForRepo, {
-              owner,
-              repo,
-              state: "open",
-              creator: "github-actions[bot]",
-              per_page: 100,
-            });
-            const match = existing.find((issue) => issue.title === title);
-
-            if (match) {
-              await github.rest.issues.update({
-                owner,
-                repo,
-                issue_number: match.number,
-                body,
+            // Ensure upstream-sync label exists
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name: "upstream-sync" });
+            } catch {
+              await github.rest.issues.createLabel({
+                owner, repo, name: "upstream-sync",
+                color: "1d76db", description: "Automated upstream release sync",
               });
-              core.info(`Updated existing conflict issue #${match.number}`);
+            }
+
+            const existing = await github.rest.pulls.list({
+              owner, repo, state: "open", base: "main", head, per_page: 1,
+            });
+
+            if (existing.data.length > 0) {
+              const pull = existing.data[0];
+              await github.rest.pulls.update({
+                owner, repo, pull_number: pull.number, title, body,
+              });
+              core.info(`Updated existing draft PR #${pull.number}`);
               return;
             }
 
-            const created = await github.rest.issues.create({
-              owner,
-              repo,
-              title,
-              body,
+            const created = await github.rest.pulls.create({
+              owner, repo, base: "main", head: process.env.BRANCH,
+              title, body, draft: true,
             });
-            core.info(`Created conflict issue #${created.data.number}`);
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number: created.data.number,
+              labels: ["upstream-sync"],
+            });
+            core.info(`Created draft PR #${created.data.number}`);
 
       - name: Open or update pull request
         if: steps.sync.outputs.needs_sync == 'true'
@@ -191,6 +264,8 @@ jobs:
           TAG: ${{ steps.release.outputs.tag }}
           TAG_URL: ${{ steps.release.outputs.html_url }}
           BRANCH: ${{ steps.sync.outputs.branch }}
+          UPSTREAM_LOG: ${{ steps.sync.outputs.upstream_log }}
+          UPSTREAM_COUNT: ${{ steps.sync.outputs.upstream_count }}
         with:
           script: |
             const owner = context.repo.owner;
@@ -198,42 +273,98 @@ jobs:
             const head = `${owner}:${process.env.BRANCH}`;
             const title = `chore: sync upstream ${process.env.TAG}`;
             const releaseUrl = process.env.TAG_URL || `https://github.com/openclaw/openclaw/releases/tag/${process.env.TAG}`;
+            const upstreamLog = process.env.UPSTREAM_LOG || "(unable to retrieve)";
+            const upstreamCount = process.env.UPSTREAM_COUNT || "?";
+
             const body = [
               `Automated sync from upstream stable release \`${process.env.TAG}\`.`,
               "",
               `Upstream release: ${releaseUrl}`,
               "",
+              `## Upstream changes (${upstreamCount} commits)`,
+              "```",
+              upstreamLog,
+              "```",
+              "",
+              "---",
               "This PR was created by `.github/workflows/upstream-release-sync.yml`.",
             ].join("\n");
 
+            // Ensure upstream-sync label exists
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name: "upstream-sync" });
+            } catch {
+              await github.rest.issues.createLabel({
+                owner, repo, name: "upstream-sync",
+                color: "1d76db", description: "Automated upstream release sync",
+              });
+            }
+
             const existing = await github.rest.pulls.list({
-              owner,
-              repo,
-              state: "open",
-              base: "main",
-              head,
-              per_page: 1,
+              owner, repo, state: "open", base: "main", head, per_page: 1,
             });
 
             if (existing.data.length > 0) {
               const pull = existing.data[0];
               await github.rest.pulls.update({
-                owner,
-                repo,
-                pull_number: pull.number,
-                title,
-                body,
+                owner, repo, pull_number: pull.number, title, body,
               });
+              if (pull.draft) {
+                try {
+                  await github.rest.pulls.readyForReview({
+                    owner,
+                    repo,
+                    pull_number: pull.number,
+                  });
+                  core.info(`Marked PR #${pull.number} ready for review`);
+                } catch (error) {
+                  if (error?.status !== 422) {
+                    throw error;
+                  }
+                }
+              }
               core.info(`Updated existing PR #${pull.number}`);
               return;
             }
 
             const created = await github.rest.pulls.create({
-              owner,
-              repo,
-              base: "main",
-              head: process.env.BRANCH,
-              title,
-              body,
+              owner, repo, base: "main", head: process.env.BRANCH,
+              title, body,
+            });
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number: created.data.number,
+              labels: ["upstream-sync"],
             });
             core.info(`Created PR #${created.data.number}`);
+
+      - name: Close resolved conflict issues
+        if: steps.sync.outputs.needs_sync == 'true'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Close any leftover conflict issues from before the draft-PR migration
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: "open",
+              creator: "github-actions[bot]",
+              per_page: 100,
+            });
+            const stale = issues.filter((i) =>
+              i.title.startsWith("chore: manual upstream sync required")
+            );
+
+            for (const issue of stale) {
+              await github.rest.issues.update({
+                owner, repo, issue_number: issue.number,
+                state: "closed", state_reason: "completed",
+              });
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issue.number,
+                body: `Closed automatically — upstream \`${process.env.TAG}\` merged cleanly in a newer sync run.`,
+              });
+              core.info(`Closed stale conflict issue #${issue.number}`);
+            }
