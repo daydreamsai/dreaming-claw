@@ -14,6 +14,7 @@ import { applyAuthChoiceOpenAI } from "./auth-choice.apply.openai.js";
 import { applyAuthChoiceQwenPortal } from "./auth-choice.apply.qwen-portal.js";
 import { applyAuthChoiceVllm } from "./auth-choice.apply.vllm.js";
 import { applyAuthChoiceX402 } from "./auth-choice.apply.x402.js";
+import { applyAuthChoiceXAI } from "./auth-choice.apply.xai.js";
 
 export type ApplyAuthChoiceParams = {
   authChoice: AuthChoice;
@@ -53,6 +54,7 @@ export async function applyAuthChoice(
     applyAuthChoiceGoogleGeminiCli,
     applyAuthChoiceCopilotProxy,
     applyAuthChoiceQwenPortal,
+    applyAuthChoiceXAI,
     applyAuthChoiceX402,
   ];
 
