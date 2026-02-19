@@ -1,0 +1,278 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.daydreams.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (must already exist, e.g. v2026.2.17.daydreams.1)"
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Resolve and validate tag
+        id: tag
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+\.daydreams\.[0-9]+$ ]]; then
+            echo "::error::Invalid tag format: ${TAG}"
+            echo "Expected: v<major>.<minor>.<patch>.daydreams.<n>"
+            exit 1
+          fi
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag exists on remote
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git ls-remote --exit-code --tags "https://github.com/${{ github.repository }}.git" "refs/tags/${TAG}" >/dev/null
+
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@41ff72655975bd51cab0327fa583b6e92b6d3061 # v4
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Pack tarball
+        id: pack
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          TARBALL="openclaw-${TAG}.tgz"
+
+          rm -f openclaw-*.tgz
+          pnpm pack --pack-destination .
+
+          mapfile -t PACKED_FILES < <(find . -maxdepth 1 -type f -name "openclaw-*.tgz" -printf "%f\n")
+          if [[ "${#PACKED_FILES[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly 1 tarball, found ${#PACKED_FILES[@]}"
+            ls -la openclaw-*.tgz 2>/dev/null || true
+            exit 1
+          fi
+
+          PACKED="${PACKED_FILES[0]}"
+          if [[ "$PACKED" != "$TARBALL" ]]; then
+            mv "$PACKED" "$TARBALL"
+          fi
+
+          echo "tarball=${TARBALL}" >> "$GITHUB_OUTPUT"
+          echo "Packed: ${TARBALL} ($(du -h "$TARBALL" | cut -f1))"
+
+      - name: Generate changelog
+        id: changelog
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          PREV_TAG="$(git tag --list "v*.daydreams.*" --sort=-version:refname | grep -v "^${TAG}$" | head -1 || true)"
+          if [[ -z "$PREV_TAG" ]]; then
+            echo "No previous daydreams tag found; using full log."
+            PREV_TAG="$(git rev-list --max-parents=0 HEAD | head -1)"
+          fi
+
+          echo "Previous tag: ${PREV_TAG}"
+          echo "prev_tag=${PREV_TAG}" >> "$GITHUB_OUTPUT"
+
+          CHANGE_LINES="$(
+            git log "${PREV_TAG}..${TAG}" --oneline --no-merges --pretty=format:"%s" \
+              | sed "/^style:/d" \
+              | sed "/^chore: mark pending upstream sync/d" \
+              | head -50 \
+              | sed "s/^/- /"
+          )"
+          if [[ -z "$CHANGE_LINES" ]]; then
+            CHANGE_LINES="- No notable changes"
+          fi
+
+          {
+            echo "body<<EOF"
+            echo "## Changes since ${PREV_TAG}"
+            echo ""
+            echo "$CHANGE_LINES"
+            echo ""
+            echo ""
+            echo "## Install"
+            echo ""
+            echo '```bash'
+            echo 'curl -fsSL https://raw.githubusercontent.com/daydreamsai/dreaming-claw/main/scripts/install-openclaw-fork.sh | bash'
+            echo '```'
+            echo ""
+            echo "**Full diff:** [\`${PREV_TAG}...${TAG}\`](https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG})"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+          BODY: ${{ steps.changelog.outputs.body }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; updating."
+            gh release edit "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "x402-claw ${TAG}" \
+              --notes "$BODY"
+            gh release upload "$TAG" "$TARBALL" \
+              --repo "${{ github.repository }}" \
+              --clobber
+          else
+            gh release create "$TAG" "$TARBALL" \
+              --repo "${{ github.repository }}" \
+              --title "x402-claw ${TAG}" \
+              --notes "$BODY"
+          fi
+
+  update-installer:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: main
+
+      - name: Determine installer change
+        id: update
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          FILE="scripts/install-openclaw-fork.sh"
+          CURRENT="$(grep -oP 'OPENCLAW_REF="\K[^"]+' "$FILE" | tail -1)"
+
+          if [[ "$CURRENT" == "$TAG" ]]; then
+            echo "Installer already points to ${TAG}; skipping."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "previous=${CURRENT}" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update PR for installer
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release.outputs.tag }}
+          PREVIOUS: ${{ steps.update.outputs.previous }}
+        run: |
+          set -euo pipefail
+
+          BRANCH="release/update-installer-${TAG}"
+          FILE="scripts/install-openclaw-fork.sh"
+          HEAD_REF="${{ github.repository_owner }}:${BRANCH}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BRANCH_EXISTS=0
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            BRANCH_EXISTS=1
+            git fetch origin "$BRANCH":"$BRANCH"
+            git checkout "$BRANCH"
+          else
+            git checkout -b "$BRANCH"
+          fi
+
+          CURRENT_BRANCH_REF="$(grep -oP 'OPENCLAW_REF="\K[^"]+' "$FILE" | tail -1)"
+          if [[ "$CURRENT_BRANCH_REF" != "$TAG" ]]; then
+            sed -i "s|OPENCLAW_REF=\"${CURRENT_BRANCH_REF}\"|OPENCLAW_REF=\"${TAG}\"|" "$FILE"
+          fi
+
+          git add "$FILE"
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update installer default ref to ${TAG}"
+            if [[ "$BRANCH_EXISTS" == "1" ]]; then
+              git push origin "$BRANCH"
+            else
+              git push -u origin "$BRANCH"
+            fi
+          else
+            echo "No installer commit needed on ${BRANCH}."
+          fi
+
+          PR_BODY="$(cat <<EOF
+          Automated update from the release workflow.
+
+          | | |
+          |---|---|
+          | **Previous** | \`${PREVIOUS}\` |
+          | **New** | \`${TAG}\` |
+          | **Release** | [${TAG}](https://github.com/${{ github.repository }}/releases/tag/${TAG}) |
+
+          Merge this to make \`curl | bash\` installs use the new release.
+
+          ---
+          This PR was created by \`.github/workflows/release.yml\`.
+          EOF
+          )"
+
+          EXISTING_PR="$(gh pr list \
+            --repo "${{ github.repository }}" \
+            --base main \
+            --head "$HEAD_REF" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [[ -n "$EXISTING_PR" ]]; then
+            gh pr edit "$EXISTING_PR" \
+              --repo "${{ github.repository }}" \
+              --title "chore: update installer default ref to ${TAG}" \
+              --body "$PR_BODY"
+            echo "Updated existing PR #${EXISTING_PR}"
+          else
+            gh pr create \
+              --repo "${{ github.repository }}" \
+              --base main \
+              --head "$HEAD_REF" \
+              --title "chore: update installer default ref to ${TAG}" \
+              --body "$PR_BODY"
+          fi
