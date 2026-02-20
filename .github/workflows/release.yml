@@ -117,8 +117,7 @@ jobs:
             git log "${PREV_TAG}..${TAG}" --oneline --no-merges --pretty=format:"%s" \
               | sed "/^style:/d" \
               | sed "/^chore: mark pending upstream sync/d" \
-              | head -50 \
-              | sed "s/^/- /"
+              | awk 'NR<=50 { print "- " $0 }'
           )"
           if [[ -z "$CHANGE_LINES" ]]; then
             CHANGE_LINES="- No notable changes"
