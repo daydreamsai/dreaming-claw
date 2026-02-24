@@ -44,6 +44,7 @@ Looking for third-party listings? See [Community plugins](/plugins/community).
 - Microsoft Teams is plugin-only as of 2026.1.15; install `@openclaw/msteams` if you use Teams.
 - Memory (Core) — bundled memory search plugin (enabled by default via `plugins.slots.memory`)
 - Memory (LanceDB) — bundled long-term memory plugin (auto-recall/capture; set `plugins.slots.memory = "memory-lancedb"`)
+- Taskmarket — bundled typed marketplace tools (`taskmarket_command`, `taskmarket_search`, `taskmarket_browse`, `taskmarket_install`, `taskmarket_open`, `taskmarket_apply`)
 - [Voice Call](/plugins/voice-call) — `@openclaw/voice-call`
 - [Zalo Personal](/plugins/zalouser) — `@openclaw/zalouser`
 - [Matrix](/channels/matrix) — `@openclaw/matrix`

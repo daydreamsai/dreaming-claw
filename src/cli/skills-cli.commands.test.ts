@@ -5,6 +5,7 @@ const loadConfigMock = vi.fn();
 const resolveAgentWorkspaceDirMock = vi.fn();
 const resolveDefaultAgentIdMock = vi.fn();
 const buildWorkspaceSkillStatusMock = vi.fn();
+const installSkillMock = vi.fn();
 const formatSkillsListMock = vi.fn();
 const formatSkillInfoMock = vi.fn();
 const formatSkillsCheckMock = vi.fn();
@@ -26,6 +27,10 @@ vi.mock("../agents/agent-scope.js", () => ({
 
 vi.mock("../agents/skills-status.js", () => ({
   buildWorkspaceSkillStatus: buildWorkspaceSkillStatusMock,
+}));
+
+vi.mock("../agents/skills-install.js", () => ({
+  installSkill: installSkillMock,
 }));
 
 vi.mock("./skills-cli.format.js", () => ({
@@ -66,6 +71,14 @@ describe("registerSkillsCli", () => {
     formatSkillsListMock.mockReturnValue("skills-list-output");
     formatSkillInfoMock.mockReturnValue("skills-info-output");
     formatSkillsCheckMock.mockReturnValue("skills-check-output");
+    installSkillMock.mockResolvedValue({
+      ok: true,
+      message: "Installed",
+      stdout: "",
+      stderr: "",
+      code: 0,
+      warnings: [],
+    });
   });
 
   it("runs list command with resolved report and formatter options", async () => {
@@ -108,6 +121,55 @@ describe("registerSkillsCli", () => {
 
     expect(formatSkillsListMock).toHaveBeenCalledWith(report, {});
     expect(runtime.log).toHaveBeenCalledWith("skills-list-output");
+  });
+
+  it("runs install command with default installer", async () => {
+    buildWorkspaceSkillStatusMock.mockReturnValue({
+      ...report,
+      skills: [
+        {
+          name: "taskmarket",
+          skillKey: "taskmarket",
+          install: [{ id: "node", kind: "node", label: "Install task-market", bins: [] }],
+        },
+      ],
+    });
+
+    await runCli(["skills", "install", "taskmarket"]);
+
+    expect(installSkillMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceDir: "/tmp/workspace",
+        skillName: "taskmarket",
+        installId: "node",
+        config: { gateway: {} },
+      }),
+    );
+    expect(runtime.log).toHaveBeenCalledWith("Installed taskmarket (node).");
+  });
+
+  it("requires --id when multiple installers are exposed", async () => {
+    buildWorkspaceSkillStatusMock.mockReturnValue({
+      ...report,
+      skills: [
+        {
+          name: "multi",
+          skillKey: "multi",
+          install: [
+            { id: "brew", kind: "brew", label: "brew", bins: [] },
+            { id: "node", kind: "node", label: "node", bins: [] },
+          ],
+        },
+      ],
+    });
+
+    await runCli(["skills", "install", "multi"]);
+
+    expect(installSkillMock).not.toHaveBeenCalled();
+    expect(runtime.error).toHaveBeenCalledWith(
+      expect.stringContaining('Skill "multi" has multiple installers.'),
+    );
+    expect(runtime.exit).toHaveBeenCalledWith(1);
   });
 
   it("reports runtime errors when report loading fails", async () => {

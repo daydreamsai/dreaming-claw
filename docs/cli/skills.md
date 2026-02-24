@@ -23,4 +23,6 @@ openclaw skills list
 openclaw skills list --eligible
 openclaw skills info <name>
 openclaw skills check
+openclaw skills install <name>
+openclaw skills install <name> --id <installId>
 ```

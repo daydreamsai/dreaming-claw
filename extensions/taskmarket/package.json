@@ -1,0 +1,17 @@
+{
+  "name": "@openclaw/taskmarket",
+  "version": "2026.2.22",
+  "description": "OpenClaw Taskmarket typed tool plugin",
+  "type": "module",
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48"
+  },
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

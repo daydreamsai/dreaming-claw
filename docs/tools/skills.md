@@ -57,6 +57,9 @@ Common flows:
 
 - Install a skill into your workspace:
   - `clawhub install <skill-slug>`
+- Install a dependency declared by a skill:
+  - `openclaw skills install <name>`
+  - `openclaw skills install <name> --id <installId>` (when a skill exposes multiple installers)
 - Update all installed skills:
   - `clawhub update --all`
 - Sync (scan + publish updates):
@@ -143,6 +146,22 @@ Note on sandboxing:
   Package installs also require network egress, a writable root FS, and a root user in the sandbox.
   Example: the `summarize` skill (`skills/summarize/SKILL.md`) needs the `summarize` CLI
   in the sandbox container to run there.
+  Example: the `taskmarket` skill (`skills/taskmarket/SKILL.md`) needs `taskmarket`
+  available in the sandbox too:
+
+  ```json5
+  {
+    agents: {
+      defaults: {
+        sandbox: {
+          docker: {
+            setupCommand: "npm install -g @lucid-agents/taskmarket",
+          },
+        },
+      },
+    },
+  }
+  ```
 
 Installer example:
 

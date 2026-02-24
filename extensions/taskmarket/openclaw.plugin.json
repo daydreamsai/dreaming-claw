@@ -1,0 +1,31 @@
+{
+  "id": "taskmarket",
+  "name": "Taskmarket",
+  "description": "Typed Taskmarket marketplace tools via the taskmarket CLI.",
+  "skills": ["./skills"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "binary": {
+        "type": "string",
+        "description": "Override CLI binary name/path (default: taskmarket)."
+      },
+      "timeoutMs": {
+        "type": "number",
+        "minimum": 1000,
+        "description": "Default command timeout in milliseconds."
+      }
+    }
+  },
+  "uiHints": {
+    "binary": {
+      "label": "CLI Binary Path",
+      "placeholder": "/usr/local/bin/taskmarket"
+    },
+    "timeoutMs": {
+      "label": "Command Timeout (ms)",
+      "placeholder": "45000"
+    }
+  }
+}
