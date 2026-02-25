@@ -1,7 +1,7 @@
-upstream_tag: v2026.2.21
+upstream_tag: v2026.2.24
 status: conflict
-created: 2026-02-22T07:08:44Z
+created: 2026-02-25T07:31:11Z
 
 This file was created by the upstream-release-sync workflow.
-The merge of upstream tag v2026.2.21 into main produced conflicts.
+The merge of upstream tag v2026.2.24 into main produced conflicts.
 Resolve them, delete this file, and push to this branch.
