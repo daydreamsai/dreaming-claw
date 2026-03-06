@@ -77,6 +77,15 @@ describe("parseTaskmarketWalletConfig", () => {
       TaskmarketWalletError,
     );
   });
+
+  it("throws when keystorePath is missing", () => {
+    const sentinel = createTaskmarketSentinel({
+      v: 1,
+      keystorePath: "",
+      apiUrl: "https://api-market.daydreams.systems",
+    });
+    expect(() => parseTaskmarketWalletConfig(sentinel)).toThrow(TaskmarketWalletError);
+  });
 });
 
 describe("decryptTaskmarketPrivateKey", () => {

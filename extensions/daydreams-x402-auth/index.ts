@@ -348,7 +348,7 @@ function buildTaskmarketSentinel(payload: { keystorePath: string; apiUrl?: strin
     keystorePath: payload.keystorePath,
   };
   const apiUrl = payload.apiUrl ? normalizeTaskmarketApiUrl(payload.apiUrl) : "";
-  if (apiUrl && apiUrl !== FALLBACK_TASKMARKET_API_URL) {
+  if (apiUrl) {
     record.apiUrl = apiUrl;
   }
   return `${TASKMARKET_SENTINEL_PREFIX}${toBase64Url(JSON.stringify(record))}`;

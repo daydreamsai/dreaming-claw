@@ -11,6 +11,7 @@ const DEFAULT_TASKMARKET_API_URL =
 const DEFAULT_ACCOUNT_CACHE_TTL_MS = 15 * 60 * 1000;
 const WALLET_ADDRESS_REGEX = /^0x[0-9a-fA-F]{40}$/;
 const PRIVATE_KEY_REGEX = /^0x[0-9a-fA-F]{64}$/;
+const MIN_ENCRYPTED_KEY_HEX_LENGTH = (12 + 16 + 1) * 2;
 
 export type TaskmarketWalletConfig = {
   v: 1;
@@ -101,7 +102,8 @@ function parseTaskmarketKeystore(raw: unknown, sourcePath: string): TaskmarketKe
   if (
     !encryptedKey ||
     !/^[0-9a-fA-F]+$/.test(encryptedKey) ||
-    encryptedKey.length < 58 ||
+    // 12-byte IV + 16-byte tag + at least 1 byte of ciphertext, hex-encoded.
+    encryptedKey.length < MIN_ENCRYPTED_KEY_HEX_LENGTH ||
     encryptedKey.length % 2 !== 0
   ) {
     throw new TaskmarketWalletError(
@@ -403,12 +405,7 @@ export async function createTaskmarketAccount(params: {
   } catch (error) {
     // Clear any stale cache and retry once for transient auth/network failures.
     accountCache.delete(cacheKey);
-    if (
-      error instanceof TaskmarketWalletError &&
-      (error.code === "network" ||
-        error.code === "device_auth" ||
-        error.code === "device_not_found")
-    ) {
+    if (error instanceof TaskmarketWalletError && error.code === "network") {
       return attemptResolveAccount();
     }
     throw error;
