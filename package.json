@@ -308,8 +308,6 @@
     "test:docker:live-models": "bash scripts/test-live-models-docker.sh",
     "test:docker:onboard": "bash scripts/e2e/onboard-docker.sh",
     "test:docker:plugins": "bash scripts/e2e/plugins-docker.sh",
-    "test:docker:plugins-dreams-router:loop": "node --import tsx scripts/e2e/plugins-live-router-loop.ts",
-    "test:docker:plugins-live-router:loop": "node --import tsx scripts/e2e/plugins-live-router-loop.ts",
     "test:docker:qr": "bash scripts/e2e/qr-import-docker.sh",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:extensions": "vitest run --config vitest.extensions.config.ts",
@@ -384,8 +382,7 @@
     "sqlite-vec": "0.1.7-alpha.2",
     "tar": "7.5.11",
     "tslog": "^4.10.2",
-    "undici": "^7.19.0",
-    "viem": "2.45.0",
+    "undici": "^7.22.0",
     "ws": "^8.19.0",
     "yaml": "^2.8.2",
     "zod": "^4.3.6"
