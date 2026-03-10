@@ -9,6 +9,7 @@ import {
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   getActiveTaskCount,
+  markGatewayDraining,
   resetAllLanes,
   waitForActiveTasks,
 } from "../../process/command-queue.js";
@@ -74,7 +75,9 @@ export async function runGatewayLoop(params: {
         `full process restart failed (${respawn.detail ?? "unknown error"}); falling back to in-process restart`,
       );
     } else {
-      gatewayLog.info("restart mode: in-process restart (OPENCLAW_NO_RESPAWN)");
+      gatewayLog.info(
+        `restart mode: in-process restart (${respawn.detail ?? "OPENCLAW_NO_RESPAWN"})`,
+      );
     }
     if (hadLock && !(await reacquireLockForInProcessRestart())) {
       return;
@@ -103,7 +106,10 @@ export async function runGatewayLoop(params: {
     const forceExitMs = isRestart ? DRAIN_TIMEOUT_MS + SHUTDOWN_TIMEOUT_MS : SHUTDOWN_TIMEOUT_MS;
     const forceExitTimer = setTimeout(() => {
       gatewayLog.error("shutdown timed out; exiting without full cleanup");
-      exitProcess(0);
+      // Exit non-zero on restart timeout so launchd/systemd treats it as a
+      // failure and triggers a clean process restart instead of assuming the
+      // shutdown was intentional. Stop-timeout stays at 0 (graceful). (#36822)
+      exitProcess(isRestart ? 1 : 0);
     }, forceExitMs);
 
     void (async () => {
@@ -111,6 +117,9 @@ export async function runGatewayLoop(params: {
         // On restart, wait for in-flight agent turns to finish before
         // tearing down the server so buffered messages are delivered.
         if (isRestart) {
+          // Reject new enqueues immediately during the drain window so
+          // sessions get an explicit restart error instead of silent task loss.
+          markGatewayDraining();
           const activeTasks = getActiveTaskCount();
           if (activeTasks > 0) {
             gatewayLog.info(
@@ -181,10 +190,34 @@ export async function runGatewayLoop(params: {
 
     // Keep process alive; SIGUSR1 triggers an in-process restart (no supervisor required).
     // SIGTERM/SIGINT still exit after a graceful shutdown.
+    let isFirstStart = true;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       onIteration();
-      server = await params.start();
+      try {
+        server = await params.start();
+        isFirstStart = false;
+      } catch (err) {
+        // On initial startup, let the error propagate so the outer handler
+        // can report "Gateway failed to start" and exit non-zero. Only
+        // swallow errors on subsequent in-process restarts to keep the
+        // process alive (a crash would lose macOS TCC permissions). (#35862)
+        if (isFirstStart) {
+          throw err;
+        }
+        server = null;
+        // Release the gateway lock so that `daemon restart/stop` (which
+        // discovers PIDs via the gateway port) can still manage the process.
+        // Without this, the process holds the lock but is not listening,
+        // forcing manual cleanup. (#35862)
+        await releaseLockIfHeld();
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const errStack = err instanceof Error && err.stack ? `\n${err.stack}` : "";
+        gatewayLog.error(
+          `gateway startup failed: ${errMsg}. ` +
+            `Process will stay alive; fix the issue and restart.${errStack}`,
+        );
+      }
       await new Promise<void>((resolve) => {
         restartResolver = resolve;
       });

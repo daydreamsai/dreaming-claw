@@ -10,6 +10,7 @@ import {
   resolveGatewayPort,
   writeConfigFile,
 } from "../../config/config.js";
+import { formatConfigIssueLines } from "../../config/issue-format.js";
 import { resolveGatewayService } from "../../daemon/service.js";
 import {
   channelToNpmTag,
@@ -57,6 +58,7 @@ import {
   resolveGlobalManager,
   resolveNodeRunner,
   resolveTargetVersion,
+  resolveUpdateGitRepo,
   resolveUpdateRoot,
   runUpdateStep,
   tryWriteCompletionCache,
@@ -323,6 +325,8 @@ async function runPackageInstallUpdate(params: {
 async function runGitUpdate(params: {
   root: string;
   switchToGit: boolean;
+  gitRepoUrl: string;
+  enforceGitRepo: boolean;
   installKind: "git" | "package" | "unknown";
   timeoutMs: number | undefined;
   startedAt: number;
@@ -336,21 +340,24 @@ async function runGitUpdate(params: {
   const updateRoot = params.switchToGit ? resolveGitInstallDir() : params.root;
   const effectiveTimeout = params.timeoutMs ?? 20 * 60_000;
 
-  const cloneStep = params.switchToGit
-    ? await ensureGitCheckout({
-        dir: updateRoot,
-        timeoutMs: effectiveTimeout,
-        progress: params.progress,
-      })
-    : null;
+  const checkoutStep =
+    params.switchToGit || params.enforceGitRepo
+      ? await ensureGitCheckout({
+          dir: updateRoot,
+          timeoutMs: effectiveTimeout,
+          progress: params.progress,
+          repoUrl: params.gitRepoUrl,
+          enforceRepo: params.enforceGitRepo,
+        })
+      : null;
 
-  if (cloneStep && cloneStep.exitCode !== 0) {
+  if (checkoutStep && checkoutStep.exitCode !== 0) {
     const result: UpdateRunResult = {
       status: "error",
       mode: "git",
       root: updateRoot,
-      reason: cloneStep.name,
-      steps: [cloneStep],
+      reason: checkoutStep.name,
+      steps: [checkoutStep],
       durationMs: Date.now() - params.startedAt,
     };
     params.stop();
@@ -367,7 +374,7 @@ async function runGitUpdate(params: {
     channel: params.channel,
     tag: params.tag,
   });
-  const steps = [...(cloneStep ? [cloneStep] : []), ...updateResult.steps];
+  const steps = [...(checkoutStep ? [checkoutStep] : []), ...updateResult.steps];
 
   if (params.switchToGit && updateResult.status === "ok") {
     const manager = await resolveGlobalManager({
@@ -655,16 +662,24 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
     return;
   }
   if (opts.channel && !configSnapshot.valid) {
-    const issues = configSnapshot.issues.map((issue) => `- ${issue.path}: ${issue.message}`);
+    const issues = formatConfigIssueLines(configSnapshot.issues, "-");
     defaultRuntime.error(["Config is invalid; cannot set update channel.", ...issues].join("\n"));
     defaultRuntime.exit(1);
     return;
   }
 
+  const gitRepo = resolveUpdateGitRepo(
+    configSnapshot.valid ? configSnapshot.config.update?.gitRepo : undefined,
+  );
+  const preferGitRepo = gitRepo.source !== "default";
+
   const installKind = updateStatus.installKind;
-  const switchToGit = requestedChannel === "dev" && installKind !== "git";
+  const switchToGit = installKind !== "git" && (requestedChannel === "dev" || preferGitRepo);
   const switchToPackage =
-    requestedChannel !== null && requestedChannel !== "dev" && installKind === "git";
+    requestedChannel !== null &&
+    requestedChannel !== "dev" &&
+    installKind === "git" &&
+    !preferGitRepo;
   const updateInstallKind = switchToGit ? "git" : switchToPackage ? "package" : installKind;
   const defaultChannel =
     updateInstallKind === "git" ? DEFAULT_GIT_CHANNEL : DEFAULT_PACKAGE_CHANNEL;
@@ -711,11 +726,16 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
       actions.push(`Persist update.channel=${requestedChannel} in config`);
     }
     if (switchToGit) {
-      actions.push("Switch install mode from package to git checkout (dev channel)");
+      actions.push(
+        `Switch install mode from package to git checkout (channel ${channel}, repo ${gitRepo.url})`,
+      );
     } else if (switchToPackage) {
       actions.push(`Switch install mode from git to package manager (${mode})`);
     } else if (updateInstallKind === "git") {
       actions.push(`Run git update flow on channel ${channel} (fetch/rebase/build/doctor)`);
+      if (gitRepo.source !== "default") {
+        actions.push(`Ensure git origin matches configured repo (${gitRepo.url})`);
+      }
     } else {
       actions.push(`Run global package manager update with spec openclaw@${tag}`);
     }
@@ -818,11 +838,15 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
 
   let restartScriptPath: string | null = null;
   let refreshGatewayServiceEnv = false;
+  const gatewayPort = resolveGatewayPort(
+    configSnapshot.valid ? configSnapshot.config : undefined,
+    process.env,
+  );
   if (shouldRestart) {
     try {
       const loaded = await resolveGatewayService().isLoaded({ env: process.env });
       if (loaded) {
-        restartScriptPath = await prepareRestartScript(process.env);
+        restartScriptPath = await prepareRestartScript(process.env, gatewayPort);
         refreshGatewayServiceEnv = true;
       }
     } catch {
@@ -842,6 +866,8 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
     : await runGitUpdate({
         root,
         switchToGit,
+        gitRepoUrl: gitRepo.url,
+        enforceGitRepo: gitRepo.source !== "default",
         installKind,
         timeoutMs,
         startedAt,
@@ -903,7 +929,7 @@ export async function updateCommand(opts: UpdateCommandOptions): Promise<void> {
     result,
     opts,
     refreshServiceEnv: refreshGatewayServiceEnv,
-    gatewayPort: resolveGatewayPort(configSnapshot.valid ? configSnapshot.config : undefined),
+    gatewayPort,
     restartScriptPath,
   });
 

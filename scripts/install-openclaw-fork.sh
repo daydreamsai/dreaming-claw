@@ -20,7 +20,7 @@ set -euo pipefail
 #   OPENCLAW_SPEC=<npm-install-spec>       # optional direct spec (e.g. file:/path, git+https://...)
 #   OPENCLAW_RELEASE_REPO=<github-url>     # repo URL for release tarballs (default: daydreamsai/openclaw-x402-router)
 #   OPENCLAW_REPO=https://github.com/<org>/<repo>.git  # for git+https:// fallback
-#   OPENCLAW_REF=<tag-or-commit>         # preferred (immutable)
+#   OPENCLAW_REF=<tag-or-commit>         # preferred (immutable); if omitted, resolves latest stable release tag
 #   OPENCLAW_BRANCH=<branch>             # fallback for development
 #   OPENCLAW_INSTALLER=npm|pnpm|auto
 #   OPENCLAW_BIN=openclaw|moltbot
@@ -31,6 +31,9 @@ set -euo pipefail
 #   OPENCLAW_SKILLS_DIR=/path/to/skills      # override skills install directory
 #   OPENCLAW_LUCID_SDK_SKILL_URL=<url>       # override lucid-agents-sdk SKILL.md URL
 #   OPENCLAW_XGATE_ROUTER_SKILL_URL=<url>    # override xgate router SKILL.md URL
+#   X402_WALLET=saw|taskmarket|both          # optional non-interactive wallet installer selection
+#   TASKMARKET_INSTALL=1|0                   # install Taskmarket CLI globally (default: 1)
+#   TASKMARKET_SPEC=@lucid-agents/taskmarket # override Taskmarket CLI package spec
 #
 # SAW overrides:
 #   SAW_INSTALL=1|0                        # enable/disable SAW phase (default: 1)
@@ -51,6 +54,28 @@ set -euo pipefail
 
 OPENCLAW_SPEC="${OPENCLAW_SPEC:-}"
 OPENCLAW_REPO="${OPENCLAW_REPO:-https://github.com/daydreamsai/openclaw-x402-router.git}"
+OPENCLAW_RELEASE_REPO="${OPENCLAW_RELEASE_REPO:-https://github.com/daydreamsai/openclaw-x402-router}"
+normalize_openclaw_release_slug() {
+  local slug="${OPENCLAW_RELEASE_REPO%.git}"
+  slug="${slug#https://github.com/}"
+  slug="${slug#http://github.com/}"
+  slug="${slug#git@github.com:}"
+  slug="${slug#github.com/}"
+  slug="${slug#/}"
+  printf '%s\n' "$slug"
+}
+
+resolve_latest_openclaw_release_tag() {
+  local slug
+  slug="$(normalize_openclaw_release_slug)"
+  if [[ -z "$slug" || "$slug" != */* ]]; then
+    return 1
+  fi
+  curl -fsSL -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/${slug}/releases/latest" \
+    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | head -n 1
+}
 OPENCLAW_REF="${OPENCLAW_REF:-}"
 OPENCLAW_BRANCH="${OPENCLAW_BRANCH:-}"
 OPENCLAW_INSTALLER="${OPENCLAW_INSTALLER:-npm}"
@@ -62,10 +87,11 @@ OPENCLAW_INSTALL_REMOTE_SKILLS="${OPENCLAW_INSTALL_REMOTE_SKILLS:-1}"
 OPENCLAW_SKILLS_DIR="${OPENCLAW_SKILLS_DIR:-$HOME/.openclaw/skills}"
 OPENCLAW_LUCID_SDK_SKILL_URL="${OPENCLAW_LUCID_SDK_SKILL_URL:-https://raw.githubusercontent.com/daydreamsai/skills-market/main/plugins/lucid-agents-sdk/skills/SKILL.md}"
 OPENCLAW_XGATE_ROUTER_SKILL_URL="${OPENCLAW_XGATE_ROUTER_SKILL_URL:-https://ai.xgate.run/SKILL.md}"
-
-if [[ -z "$OPENCLAW_SPEC" && -z "$OPENCLAW_REF" && -z "$OPENCLAW_BRANCH" ]]; then
-  OPENCLAW_REF="v2026.2.25.daydreams.1"
-fi
+X402_WALLET="${X402_WALLET:-}"
+SAW_INSTALL_EXPLICIT="${SAW_INSTALL+x}"
+TASKMARKET_INSTALL_EXPLICIT="${TASKMARKET_INSTALL+x}"
+TASKMARKET_INSTALL="${TASKMARKET_INSTALL:-1}"
+TASKMARKET_SPEC="${TASKMARKET_SPEC:-@lucid-agents/taskmarket}"
 
 if [[ -n "$OPENCLAW_SPEC" && ( -n "$OPENCLAW_REF" || -n "$OPENCLAW_BRANCH" ) ]]; then
   echo "ERROR: set OPENCLAW_SPEC or OPENCLAW_REF/OPENCLAW_BRANCH, not both" >&2
@@ -93,6 +119,101 @@ SAW_SKIP_KEYGEN="${SAW_SKIP_KEYGEN:-0}"
 SAW_POLICY_TEMPLATE="${SAW_POLICY_TEMPLATE:-conservative}"
 SAW_DREAMS_ROUTER_FACILITATOR="0x1363C7Ff51CcCE10258A7F7bddd63bAaB6aAf678"
 SAW_ALLOWLIST_ADDRESS="${SAW_ALLOWLIST_ADDRESS-$SAW_DREAMS_ROUTER_FACILITATOR}"
+
+normalize_x402_wallet_mode() {
+  local raw="$1"
+  local normalized
+  normalized="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  case "$normalized" in
+    saw|1)
+      printf '%s\n' "saw"
+      ;;
+    taskmarket|2)
+      printf '%s\n' "taskmarket"
+      ;;
+    both|3|"")
+      printf '%s\n' "both"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+prompt_x402_wallet_mode() {
+  local choice normalized
+
+  if [[ -n "$X402_WALLET" ]]; then
+    normalized="$(normalize_x402_wallet_mode "$X402_WALLET" || true)"
+    if [[ -z "$normalized" ]]; then
+      echo "ERROR: X402_WALLET must be one of: saw, taskmarket, both" >&2
+      exit 1
+    fi
+    printf '%s\n' "$normalized"
+    return 0
+  fi
+
+  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+    printf '%s\n' "both"
+    return 0
+  fi
+
+  while true; do
+    cat >/dev/tty <<'PROMPT_EOF'
+
+============================================
+  x402 Wallet Setup
+============================================
+
+Choose which wallet tooling to install:
+  1) SAW only
+  2) Taskmarket only
+  3) Both SAW + Taskmarket [default]
+
+PROMPT_EOF
+    printf 'Wallet setup [1-3]: ' >/dev/tty
+    if ! IFS= read -r choice </dev/tty; then
+      printf '%s\n' "both"
+      return 0
+    fi
+    normalized="$(normalize_x402_wallet_mode "$choice" || true)"
+    if [[ -n "$normalized" ]]; then
+      printf '%s\n' "$normalized"
+      return 0
+    fi
+    echo "Enter 1, 2, or 3." >/dev/tty
+  done
+}
+
+resolve_x402_wallet_installs() {
+  local wallet_mode
+
+  if [[ -n "$SAW_INSTALL_EXPLICIT" || -n "$TASKMARKET_INSTALL_EXPLICIT" ]]; then
+    return 0
+  fi
+
+  wallet_mode="$(prompt_x402_wallet_mode)"
+  case "$wallet_mode" in
+    saw)
+      SAW_INSTALL="1"
+      TASKMARKET_INSTALL="0"
+      ;;
+    taskmarket)
+      SAW_INSTALL="0"
+      TASKMARKET_INSTALL="1"
+      ;;
+    both)
+      SAW_INSTALL="1"
+      TASKMARKET_INSTALL="1"
+      ;;
+    *)
+      echo "ERROR: unsupported wallet mode: $wallet_mode" >&2
+      exit 1
+      ;;
+  esac
+
+  echo "==> x402 wallet setup: ${wallet_mode}"
+}
 
 # ── SAW functions ───────────────────────────────────────────────────────────
 
@@ -555,6 +676,8 @@ saw_grant_gateway_access() {
 
 # ── Phase 1: SAW daemon setup ──────────────────────────────────────────────
 
+resolve_x402_wallet_installs
+
 if [[ "$SAW_INSTALL" == "1" ]]; then
   echo ""
   echo "============================================"
@@ -586,8 +709,6 @@ echo "  Phase 2: OpenClaw Gateway Install"
 echo "============================================"
 echo ""
 
-OPENCLAW_RELEASE_REPO="${OPENCLAW_RELEASE_REPO:-https://github.com/daydreamsai/openclaw-x402-router}"
-
 resolve_release_tarball_url() {
   local tag="$1"
   local repo_url="${OPENCLAW_RELEASE_REPO%.git}"
@@ -598,6 +719,16 @@ resolve_release_tarball_url() {
   fi
   return 1
 }
+
+if [[ -z "$OPENCLAW_SPEC" && -z "$OPENCLAW_REF" && -z "$OPENCLAW_BRANCH" ]]; then
+  OPENCLAW_REF="$(resolve_latest_openclaw_release_tag || true)"
+  if [[ -z "$OPENCLAW_REF" ]]; then
+    echo "ERROR: could not determine latest stable release tag from ${OPENCLAW_RELEASE_REPO}" >&2
+    echo "Set OPENCLAW_REF=<tag> explicitly and retry." >&2
+    exit 1
+  fi
+  echo "==> Resolved latest stable release tag: ${OPENCLAW_REF}"
+fi
 
 if [[ -n "$OPENCLAW_SPEC" ]]; then
   SPEC="$OPENCLAW_SPEC"
@@ -696,6 +827,7 @@ run_npm() {
 }
 
 GLOBAL_BIN_HINT=""
+TASKMARKET_BIN_PATH=""
 
 # Remove previous global install to avoid ENOTEMPTY errors during npm rename
 echo "==> Cleaning previous global install (if any)..."
@@ -706,6 +838,10 @@ if [[ "$OPENCLAW_INSTALLER" == "pnpm" ]] || [[ "$OPENCLAW_INSTALLER" == "auto" &
   echo "==> Using pnpm global install"
   pnpm add -g "$SPEC"
   GLOBAL_BIN_HINT="$(pnpm bin -g 2>/dev/null || true)"
+  if [[ "$TASKMARKET_INSTALL" == "1" ]]; then
+    echo "==> Installing Taskmarket CLI globally"
+    pnpm add -g "$TASKMARKET_SPEC"
+  fi
 else
   if [[ "$OPENCLAW_INSTALLER" != "auto" && "$OPENCLAW_INSTALLER" != "npm" ]]; then
     echo "ERROR: unsupported OPENCLAW_INSTALLER='$OPENCLAW_INSTALLER' (expected auto|npm|pnpm)" >&2
@@ -721,6 +857,10 @@ else
   fi
   echo "==> npm script shell: ${npm_shell}"
   npm_config_script_shell="$npm_shell" run_npm install -g "$SPEC"
+  if [[ "$TASKMARKET_INSTALL" == "1" ]]; then
+    echo "==> Installing Taskmarket CLI globally"
+    npm_config_script_shell="$npm_shell" run_npm install -g "$TASKMARKET_SPEC"
+  fi
   npm_prefix="$(run_npm prefix -g 2>/dev/null || true)"
   if [[ -n "${npm_prefix:-}" ]]; then
     GLOBAL_BIN_HINT="${npm_prefix}/bin"
@@ -765,6 +905,36 @@ CLI_BIN_NAME="$(basename "$CLI_BIN_PATH")"
 echo "==> Installed CLI: ${CLI_BIN_NAME} (${CLI_BIN_PATH})"
 INSTALLED_VERSION="$("$CLI_BIN_PATH" --version 2>/dev/null || true)"
 echo "==> Installed version: ${INSTALLED_VERSION:-unknown}"
+
+if [[ "$TASKMARKET_INSTALL" == "1" ]]; then
+  if [[ -n "$GLOBAL_BIN_HINT" && -x "${GLOBAL_BIN_HINT}/taskmarket" ]]; then
+    TASKMARKET_BIN_PATH="${GLOBAL_BIN_HINT}/taskmarket"
+  elif command -v taskmarket >/dev/null 2>&1; then
+    TASKMARKET_BIN_PATH="$(command -v taskmarket)"
+  else
+    echo "ERROR: taskmarket CLI was expected to be installed but was not found in PATH" >&2
+    exit 1
+  fi
+  TASKMARKET_VERSION="$("$TASKMARKET_BIN_PATH" --version 2>/dev/null || true)"
+  echo "==> Installed Taskmarket CLI: ${TASKMARKET_BIN_PATH} (${TASKMARKET_VERSION:-unknown})"
+else
+  echo "==> Skipping Taskmarket CLI install (TASKMARKET_INSTALL=${TASKMARKET_INSTALL})"
+fi
+
+echo "==> Configuring fork-aware update defaults..."
+if "$CLI_BIN_PATH" config set update.channel stable >/dev/null 2>&1; then
+  echo "==> Set update.channel=stable"
+else
+  echo "WARNING: failed to set update.channel=stable; run manually:" >&2
+  echo "  $CLI_BIN_PATH config set update.channel stable" >&2
+fi
+
+if "$CLI_BIN_PATH" config set update.gitRepo "$OPENCLAW_REPO" >/dev/null 2>&1; then
+  echo "==> Set update.gitRepo=${OPENCLAW_REPO}"
+else
+  echo "WARNING: failed to set update.gitRepo; run manually:" >&2
+  echo "  $CLI_BIN_PATH config set update.gitRepo \"$OPENCLAW_REPO\"" >&2
+fi
 
 install_remote_skill() {
   local skill_name="$1"
@@ -821,7 +991,7 @@ fi
 
 # Resolve onboard args if not explicitly set
 if [[ -z "$OPENCLAW_ONBOARD_ARGS" ]]; then
-  OPENCLAW_ONBOARD_ARGS="onboard --install-daemon --auth-choice x402"
+  OPENCLAW_ONBOARD_ARGS="onboard --auth-choice x402"
 fi
 
 show_onboard_instructions() {
@@ -840,6 +1010,12 @@ show_onboard_instructions() {
     echo ""
   else
     echo "  $CLI_BIN_PATH onboard --auth-choice x402"
+    echo ""
+  fi
+  if [[ -n "$TASKMARKET_BIN_PATH" ]]; then
+    echo "  Taskmarket CLI:"
+    echo "    Binary:      $TASKMARKET_BIN_PATH"
+    echo "    Provision:   taskmarket init"
     echo ""
   fi
   echo "============================================"
