@@ -865,7 +865,7 @@ export function maybeWrapStreamFnWithX402Payment(params: {
     return staticBackendPromise;
   };
 
-  const fetchWithPayment: typeof fetch = async (input, init) => {
+  const fetchWithPaymentImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const outboundModel = await extractOutboundModelId(input, init);
     const url = ((): string | null => {
       if (typeof input === "string") {
@@ -1027,7 +1027,11 @@ export function maybeWrapStreamFnWithX402Payment(params: {
       );
       return baseFetch(input, init);
     }
-  };
+  }) as typeof fetch;
+
+  // Bun's fetch is a callable object with static helpers like `preconnect`.
+  // Preserve those helpers on the wrapper so it still satisfies `typeof fetch`.
+  const fetchWithPayment = Object.assign(fetchWithPaymentImpl, baseFetch);
 
   return wrapStreamFnWithFetch(params.streamFn, fetchWithPayment);
 }

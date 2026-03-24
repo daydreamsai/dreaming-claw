@@ -10,6 +10,7 @@ import { trimLogTail } from "../../infra/restart-sentinel.js";
 import { parseSemver } from "../../infra/runtime-guard.js";
 import { fetchNpmTagVersion } from "../../infra/update-check.js";
 import {
+  canResolveRegistryVersionForPackageTarget,
   detectGlobalInstallManagerByPresence,
   detectGlobalInstallManagerForRoot,
   type CommandRunner,
@@ -108,6 +109,9 @@ export async function resolveTargetVersion(
   tag: string,
   timeoutMs?: number,
 ): Promise<string | null> {
+  if (!canResolveRegistryVersionForPackageTarget(tag)) {
+    return null;
+  }
   const direct = normalizeVersionTag(tag);
   if (direct) {
     return direct;
@@ -175,6 +179,7 @@ export async function runUpdateStep(params: {
   cwd?: string;
   timeoutMs: number;
   progress?: UpdateStepProgress;
+  env?: NodeJS.ProcessEnv;
 }): Promise<UpdateStepResult> {
   const command = params.argv.join(" ");
   params.progress?.onStepStart?.({
@@ -187,6 +192,7 @@ export async function runUpdateStep(params: {
   const started = Date.now();
   const res = await runCommandWithTimeout(params.argv, {
     cwd: params.cwd,
+    env: params.env,
     timeoutMs: params.timeoutMs,
   });
   const durationMs = Date.now() - started;
