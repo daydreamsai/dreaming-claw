@@ -469,6 +469,48 @@ export const GENERATED_BUNDLED_PLUGIN_METADATA = [
     },
   },
   {
+    dirName: "daydreams-x402-auth",
+    idHint: "daydreams-x402-auth",
+    source: {
+      source: "./index.ts",
+      built: "index.js",
+    },
+    packageName: "@openclaw/daydreams-x402-auth",
+    packageVersion: "2026.1.25",
+    packageDescription: "Clawdbot Daydreams Router (x402) auth provider plugin",
+    packageManifest: {
+      extensions: ["./index.ts"],
+    },
+    manifest: {
+      id: "daydreams-x402-auth",
+      configSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          permitCap: {
+            type: "number",
+            minimum: 0.01,
+          },
+          network: {
+            type: "string",
+          },
+        },
+      },
+      providers: ["x402"],
+      uiHints: {
+        permitCap: {
+          label: "Permit Cap (USD)",
+          help: "Maximum USDC spend authorized per permit. Example: 10 = $10.00",
+        },
+        network: {
+          label: "Network (CAIP-2)",
+          help: "Examples: eip155:8453 (Base), eip155:1 (Ethereum)",
+          advanced: true,
+        },
+      },
+    },
+  },
+  {
     dirName: "deepgram",
     idHint: "deepgram",
     source: {

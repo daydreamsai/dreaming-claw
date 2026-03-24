@@ -340,6 +340,9 @@ export const GENERATED_BASE_CONFIG_SCHEMA = {
               },
             ],
           },
+          gitRepo: {
+            type: "string",
+          },
           checkOnStart: {
             type: "boolean",
           },
@@ -11930,6 +11933,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA = {
     "update.channel": {
       label: "Update Channel",
       help: 'Update channel for git + npm installs ("stable", "beta", or "dev").',
+      tags: ["advanced"],
+    },
+    "update.gitRepo": {
+      label: "Update Git Repository",
+      help: "Optional git repository URL to use for update checkouts. Set this for forks so update does not clone upstream OpenClaw by default.",
       tags: ["advanced"],
     },
     "update.checkOnStart": {

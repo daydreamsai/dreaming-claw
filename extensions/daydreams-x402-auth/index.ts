@@ -3,12 +3,8 @@ import { createDecipheriv } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import {
-  emptyPluginConfigSchema,
-  type OpenClawPluginApi,
-  type ProviderAuthContext,
-  type ProviderAuthResult,
-} from "openclaw/plugin-sdk";
+import { emptyPluginConfigSchema, type OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+import type { ProviderAuthContext, ProviderAuthResult } from "openclaw/plugin-sdk/provider-auth";
 import { privateKeyToAccount } from "viem/accounts";
 
 const PROVIDER_ID = "x402";
