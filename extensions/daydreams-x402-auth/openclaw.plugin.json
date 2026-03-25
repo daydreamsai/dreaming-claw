@@ -1,6 +1,38 @@
 {
   "id": "daydreams-x402-auth",
   "providers": ["x402"],
+  "providerAuthChoices": [
+    {
+      "provider": "x402",
+      "method": "taskmarket",
+      "choiceId": "x402",
+      "choiceLabel": "Taskmarket wallet keystore",
+      "choiceHint": "Encrypted keystore + device key",
+      "groupId": "x402",
+      "groupLabel": "Daydreams Router (x402)",
+      "groupHint": "Taskmarket, SAW, or private key"
+    },
+    {
+      "provider": "x402",
+      "method": "saw",
+      "choiceId": "x402-saw",
+      "choiceLabel": "Secure Agent Wallet (SAW)",
+      "choiceHint": "Signs permits via SAW daemon",
+      "groupId": "x402",
+      "groupLabel": "Daydreams Router (x402)",
+      "groupHint": "Taskmarket, SAW, or private key"
+    },
+    {
+      "provider": "x402",
+      "method": "wallet",
+      "choiceId": "x402-private-key",
+      "choiceLabel": "Wallet private key",
+      "choiceHint": "Stores a dedicated spend key locally",
+      "groupId": "x402",
+      "groupLabel": "Daydreams Router (x402)",
+      "groupHint": "Taskmarket, SAW, or private key"
+    }
+  ],
   "uiHints": {
     "permitCap": {
       "label": "Permit Cap (USD)",

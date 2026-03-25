@@ -10,6 +10,7 @@ import { privateKeyToAccount } from "viem/accounts";
 const PROVIDER_ID = "x402";
 const PROVIDER_LABEL = "Daydreams Router (x402)";
 const PLUGIN_ID = "daydreams-x402-auth";
+const PROVIDER_GROUP_HINT = "Taskmarket, SAW, or private key";
 
 const DEFAULT_ROUTER_URL = "https://ai.xgate.run";
 const DEFAULT_NETWORK = "eip155:8453";
@@ -37,6 +38,17 @@ const TASKMARKET_SENTINEL_VERSION = 1 as const;
 const FALLBACK_TASKMARKET_API_URL = "https://api-market.daydreams.systems";
 const DEFAULT_TASKMARKET_API_URL = process.env.TASKMARKET_API_URL || FALLBACK_TASKMARKET_API_URL;
 const DEFAULT_TASKMARKET_KEYSTORE_PATH = "~/.taskmarket/keystore.json";
+
+function buildWizardSetup(params: { choiceId: string; choiceLabel: string; choiceHint: string }) {
+  return {
+    choiceId: params.choiceId,
+    choiceLabel: params.choiceLabel,
+    choiceHint: params.choiceHint,
+    groupId: PROVIDER_ID,
+    groupLabel: PROVIDER_LABEL,
+    groupHint: PROVIDER_GROUP_HINT,
+  };
+}
 
 type X402ModelDefinition = {
   id: string;
@@ -690,6 +702,11 @@ const x402Plugin = {
           label: "Secure Agent Wallet (SAW)",
           hint: "Signs permits via SAW daemon",
           kind: "api_key",
+          wizard: buildWizardSetup({
+            choiceId: "x402-saw",
+            choiceLabel: "Secure Agent Wallet (SAW)",
+            choiceHint: "Signs permits via SAW daemon",
+          }),
           run: async (ctx: ProviderAuthContext): Promise<ProviderAuthResult> => {
             await ctx.prompter.note(
               [
@@ -816,6 +833,11 @@ const x402Plugin = {
           label: "Taskmarket wallet keystore",
           hint: "Signs permits using Taskmarket encrypted keystore + device key",
           kind: "api_key",
+          wizard: buildWizardSetup({
+            choiceId: "x402",
+            choiceLabel: "Taskmarket wallet keystore",
+            choiceHint: "Encrypted keystore + device key",
+          }),
           run: async (ctx: ProviderAuthContext): Promise<ProviderAuthResult> => {
             const keystorePath = DEFAULT_TASKMARKET_KEYSTORE_PATH;
             await ctx.prompter.note(
@@ -935,6 +957,11 @@ const x402Plugin = {
           label: "Wallet private key",
           hint: "Signs ERC-2612 permits per request",
           kind: "api_key",
+          wizard: buildWizardSetup({
+            choiceId: "x402-private-key",
+            choiceLabel: "Wallet private key",
+            choiceHint: "Stores a dedicated spend key locally",
+          }),
           run: async (ctx: ProviderAuthContext): Promise<ProviderAuthResult> => {
             await ctx.prompter.note(
               [
