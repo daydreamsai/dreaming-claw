@@ -424,10 +424,16 @@ If you want to rely on env keys (e.g. exported in your `~/.profile`), run local 
 
 ## Docker runners (optional "works in Linux" checks)
 
-These run `pnpm test:live` inside the repo Docker image, mounting your local config dir and workspace (and sourcing `~/.profile` if mounted). They also bind-mount only the needed CLI auth homes (or all supported ones when the run is not narrowed), then copy them into the container home before the run so external-CLI OAuth can refresh tokens without mutating the host auth store:
+These Docker runners split into two buckets:
+
+- Live-model runners: `test:docker:live-models` and `test:docker:live-gateway` run `pnpm test:live` inside the repo Docker image, mounting your local config dir and workspace (and sourcing `~/.profile` if mounted).
+- Container smoke runners: `test:docker:openwebui`, `test:docker:onboard`, `test:docker:gateway-network`, and `test:docker:plugins` boot one or more real containers and verify higher-level integration paths.
+
+The live-model Docker runners also bind-mount only the needed CLI auth homes (or all supported ones when the run is not narrowed), then copy them into the container home before the run so external-CLI OAuth can refresh tokens without mutating the host auth store:
 
 - Direct models: `pnpm test:docker:live-models` (script: `scripts/test-live-models-docker.sh`)
 - Gateway + dev agent: `pnpm test:docker:live-gateway` (script: `scripts/test-live-gateway-models-docker.sh`)
+- Open WebUI live smoke: `pnpm test:docker:openwebui` (script: `scripts/e2e/openwebui-docker.sh`)
 - Onboarding wizard (TTY, full scaffolding): `pnpm test:docker:onboard` (script: `scripts/e2e/onboard-docker.sh`)
 - Gateway networking (two containers, WS auth + health): `pnpm test:docker:gateway-network` (script: `scripts/e2e/gateway-network-docker.sh`)
 - Plugins (install smoke + `/plugin` alias + Claude-bundle restart semantics): `pnpm test:docker:plugins` (script: `scripts/e2e/plugins-docker.sh`)
@@ -441,6 +447,17 @@ real Telegram/Discord/etc. channel workers inside the container.
 `test:docker:live-models` still runs `pnpm test:live`, so pass through
 `OPENCLAW_LIVE_GATEWAY_*` as well when you need to narrow or exclude gateway
 live coverage from that Docker lane.
+`test:docker:openwebui` is a higher-level compatibility smoke: it starts an
+OpenClaw gateway container with the OpenAI-compatible HTTP endpoints enabled,
+starts a pinned Open WebUI container against that gateway, signs in through
+Open WebUI, verifies `/api/models` exposes `openclaw/default`, then sends a
+real chat request through Open WebUI's `/api/chat/completions` proxy.
+The first run can be noticeably slower because Docker may need to pull the
+Open WebUI image and Open WebUI may need to finish its own cold-start setup.
+This lane expects a usable live model key, and `OPENCLAW_PROFILE_FILE`
+(`~/.profile` by default) is the primary way to provide it in Dockerized runs.
+Successful runs print a small JSON payload like `{ "ok": true, "model":
+"openclaw/default", ... }`.
 
 Manual ACP plain-language thread smoke (not CI):
 
@@ -465,6 +482,9 @@ Useful env vars:
 - `OPENCLAW_E2E_LOOP_CONTINUE_ON_FAILURE=1` to keep looping and return non-zero at the end if any iteration fails
 - Loop defaults to Daydreams Router: `OPENCLAW_LIVE_GATEWAY_PROVIDERS=x402` and `OPENCLAW_LIVE_GATEWAY_MODELS=x402/auto`
 - Override Daydreams loop target without affecting global live envs: `OPENCLAW_E2E_DREAMS_ROUTER_PROVIDERS=...` and `OPENCLAW_E2E_DREAMS_ROUTER_MODELS=...`
+- `OPENCLAW_OPENWEBUI_MODEL=...` to choose the model exposed by the gateway for the Open WebUI smoke
+- `OPENCLAW_OPENWEBUI_PROMPT=...` to override the nonce-check prompt used by the Open WebUI smoke
+- `OPENWEBUI_IMAGE=...` to override the pinned Open WebUI image tag
 
 ## Docs sanity
 

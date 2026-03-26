@@ -747,6 +747,9 @@ export const GENERATED_BASE_CONFIG_SCHEMA = {
                 email: {
                   type: "string",
                 },
+                displayName: {
+                  type: "string",
+                },
               },
               required: ["provider", "mode"],
               additionalProperties: false,
@@ -16294,6 +16297,6 @@ export const GENERATED_BASE_CONFIG_SCHEMA = {
       tags: ["security", "auth"],
     },
   },
-  version: "2026.3.22",
+  version: "2026.3.24",
   generatedAt: "2026-03-22T21:17:33.302Z",
 } as const satisfies BaseConfigSchemaResponse;
