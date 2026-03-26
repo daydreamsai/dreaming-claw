@@ -43,14 +43,6 @@ export const CORE_AUTH_CHOICE_OPTIONS: ReadonlyArray<AuthChoiceOption> = [
     groupLabel: "Custom Provider",
     groupHint: "Any OpenAI or Anthropic compatible endpoint",
   },
-  {
-    value: "x402",
-    label: "Daydreams Router (x402)",
-    hint: "Wallet-signed ERC-2612 permits for USDC",
-    groupId: "x402",
-    groupLabel: "Daydreams Router (x402)",
-    groupHint: "Permit-signed USDC payments",
-  },
 ];
 
 export function formatStaticAuthChoiceChoicesForCli(params?: {

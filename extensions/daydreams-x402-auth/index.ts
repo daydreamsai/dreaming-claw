@@ -6,6 +6,7 @@ import path from "node:path";
 import { emptyPluginConfigSchema, type OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import type { ProviderAuthContext, ProviderAuthResult } from "openclaw/plugin-sdk/provider-auth";
 import { privateKeyToAccount } from "viem/accounts";
+import { buildX402RuntimeBaseUrl, maybeWrapStreamFnWithX402Payment } from "./x402-payment.js";
 
 const PROVIDER_ID = "x402";
 const PROVIDER_LABEL = "Daydreams Router (x402)";
@@ -696,6 +697,16 @@ const x402Plugin = {
       id: PROVIDER_ID,
       label: PROVIDER_LABEL,
       docsPath: "/providers/x402",
+      wrapStreamFn: (ctx) =>
+        maybeWrapStreamFnWithX402Payment({
+          streamFn: ctx.streamFn,
+          provider: ctx.provider,
+          config: ctx.config,
+        }),
+      prepareRuntimeAuth: async (ctx) => ({
+        apiKey: "x402-wallet",
+        baseUrl: buildX402RuntimeBaseUrl(ctx.model.baseUrl, ctx.apiKey),
+      }),
       auth: [
         {
           id: "saw",
@@ -775,13 +786,11 @@ const x402Plugin = {
                 ? (ctx.config.plugins.entries[PLUGIN_ID]?.config as Record<string, unknown>)
                 : {};
 
-            const pluginConfigPatch: Record<string, unknown> = { ...existingPluginConfig };
-            if (existingPluginConfig.permitCap === undefined) {
-              pluginConfigPatch.permitCap = permitCap;
-            }
-            if (!existingPluginConfig.network) {
-              pluginConfigPatch.network = network;
-            }
+            const pluginConfigPatch: Record<string, unknown> = {
+              ...existingPluginConfig,
+              permitCap,
+              network,
+            };
 
             return {
               profiles: [
@@ -895,13 +904,11 @@ const x402Plugin = {
                 ? (ctx.config.plugins.entries[PLUGIN_ID]?.config as Record<string, unknown>)
                 : {};
 
-            const pluginConfigPatch: Record<string, unknown> = { ...existingPluginConfig };
-            if (existingPluginConfig.permitCap === undefined) {
-              pluginConfigPatch.permitCap = permitCap;
-            }
-            if (!existingPluginConfig.network) {
-              pluginConfigPatch.network = network;
-            }
+            const pluginConfigPatch: Record<string, unknown> = {
+              ...existingPluginConfig,
+              permitCap,
+              network,
+            };
 
             return {
               profiles: [
@@ -1018,13 +1025,11 @@ const x402Plugin = {
                 ? (ctx.config.plugins.entries[PLUGIN_ID]?.config as Record<string, unknown>)
                 : {};
 
-            const pluginConfigPatch: Record<string, unknown> = { ...existingPluginConfig };
-            if (existingPluginConfig.permitCap === undefined) {
-              pluginConfigPatch.permitCap = permitCap;
-            }
-            if (!existingPluginConfig.network) {
-              pluginConfigPatch.network = network;
-            }
+            const pluginConfigPatch: Record<string, unknown> = {
+              ...existingPluginConfig,
+              permitCap,
+              network,
+            };
 
             return {
               profiles: [

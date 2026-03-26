@@ -29,6 +29,20 @@ describe("x402 permit cache key", () => {
   });
 });
 
+describe("x402 runtime credential base URL", () => {
+  it("stores the signing credential in a URL fragment and strips it back out", () => {
+    const baseUrl = __testing.buildX402RuntimeBaseUrl(
+      "https://ai.xgate.run",
+      "saw:main@/run/saw.sock",
+    );
+    const url = new URL(baseUrl);
+
+    expect(url.hash).toContain("__openclaw_x402");
+    expect(__testing.extractX402RuntimeCredential(url)).toBe("saw:main@/run/saw.sock");
+    expect(url.hash).toBe("");
+  });
+});
+
 describe("parseSawConfig", () => {
   it("parses a valid SAW sentinel", () => {
     const result = __testing.parseSawConfig("saw:main@/run/saw.sock");
@@ -218,6 +232,46 @@ describe("error detection helpers", () => {
     it("returns false for network errors", () => {
       expect(__testing.shouldInvalidatePermit({ error: "Network timeout" })).toBe(false);
     });
+  });
+});
+
+describe("wrapStreamFnWithFetch", () => {
+  it("restores global fetch when the wrapped stream throws synchronously", () => {
+    const demoModel = { id: "demo-model", provider: "x402" } as never;
+    const originalFetch = globalThis.fetch;
+    const replacementFetch = (() => Promise.reject(new Error("unexpected fetch"))) as typeof fetch;
+    const wrapped = __testing.wrapStreamFnWithFetch(() => {
+      throw new Error("boom");
+    }, replacementFetch);
+
+    expect(() => wrapped(demoModel, {} as never, {} as never)).toThrow("boom");
+    expect(globalThis.fetch).toBe(originalFetch);
+  });
+
+  it("restores global fetch after calling result()", async () => {
+    const demoModel = { id: "demo-model", provider: "x402" } as never;
+    const originalFetch = globalThis.fetch;
+    const replacementFetch = (() => Promise.reject(new Error("unexpected fetch"))) as typeof fetch;
+    const wrapped = __testing.wrapStreamFnWithFetch(
+      () =>
+        ({
+          async *[Symbol.asyncIterator]() {
+            yield { type: "chunk" };
+          },
+          async result() {
+            return { ok: true };
+          },
+        }) as never,
+      replacementFetch,
+    );
+
+    const stream = wrapped(demoModel, {} as never, {} as never) as {
+      result: () => Promise<unknown>;
+    };
+
+    expect(globalThis.fetch).toBe(replacementFetch);
+    await expect(stream.result()).resolves.toEqual({ ok: true });
+    expect(globalThis.fetch).toBe(originalFetch);
   });
 });
 
