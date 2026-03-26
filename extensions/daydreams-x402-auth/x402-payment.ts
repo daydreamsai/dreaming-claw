@@ -1,15 +1,16 @@
 import type { StreamFn } from "@mariozechner/pi-agent-core";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/plugin-entry";
+import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { createPublicClient, createWalletClient, http, type Account, type Chain } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base, baseSepolia, mainnet } from "viem/chains";
-import type { OpenClawConfig } from "../config/config.js";
-import { createSubsystemLogger } from "../logging/subsystem.js";
 import { createTaskmarketAccount, parseTaskmarketWalletConfig } from "./x402-taskmarket-wallet.js";
 
 const log = createSubsystemLogger("agent/x402");
 
 const X402_PROVIDER_ID = "x402";
 const X402_PLUGIN_ID = "daydreams-x402-auth";
+const X402_RUNTIME_CREDENTIAL_FRAGMENT_KEY = "__openclaw_x402";
 const DEFAULT_ROUTER_ORIGIN = "https://ai.xgate.run";
 const DEFAULT_NETWORK = "eip155:8453";
 const DEFAULT_PERMIT_CAP_USD = 10;
@@ -188,6 +189,37 @@ function normalizeRouterUrl(value?: string): string {
   const withProtocol = raw.startsWith("http") ? raw : `https://${raw}`;
   // Bare origin — no /v1 suffix; callers add paths as needed
   return withProtocol.replace(/\/+$/, "").replace(/\/v1\/?$/, "");
+}
+
+function encodeRuntimeCredential(value: string): string {
+  return Buffer.from(value, "utf8").toString("base64url");
+}
+
+function decodeRuntimeCredential(value: string): string | null {
+  try {
+    return Buffer.from(value, "base64url").toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+export function buildX402RuntimeBaseUrl(baseUrl: string | undefined, apiKey: string): string {
+  const url = new URL(normalizeRouterUrl(baseUrl));
+  const hashParams = new URLSearchParams(url.hash.replace(/^#/, ""));
+  hashParams.set(X402_RUNTIME_CREDENTIAL_FRAGMENT_KEY, encodeRuntimeCredential(apiKey));
+  url.hash = hashParams.toString();
+  return url.toString();
+}
+
+function extractX402RuntimeCredential(url: URL): string | null {
+  const hashParams = new URLSearchParams(url.hash.replace(/^#/, ""));
+  const encoded = hashParams.get(X402_RUNTIME_CREDENTIAL_FRAGMENT_KEY);
+  if (!encoded) {
+    return null;
+  }
+  hashParams.delete(X402_RUNTIME_CREDENTIAL_FRAGMENT_KEY);
+  url.hash = hashParams.toString();
+  return decodeRuntimeCredential(encoded);
 }
 
 function resolvePluginConfig(cfg?: OpenClawConfig): { permitCapUsd: number; network: string } {
@@ -710,12 +742,23 @@ function wrapStreamFnWithFetch(streamFn: StreamFn, fetchImpl: typeof fetch): Str
     // pi-ai does not expose per-request hooks; override global fetch during the stream.
     const previousFetch = globalThis.fetch;
     globalThis.fetch = fetchImpl;
+    let restored = false;
 
     const restore = () => {
+      if (restored) {
+        return;
+      }
+      restored = true;
       globalThis.fetch = previousFetch;
     };
 
-    const result = streamFn(model, context, options);
+    let result: ReturnType<StreamFn>;
+    try {
+      result = streamFn(model, context, options);
+    } catch (error) {
+      restore();
+      throw error;
+    }
 
     // The stream object from pi-ai has both async iterable interface AND a .result() method.
     // We need to preserve the .result() method while ensuring fetch is restored after iteration.
@@ -742,6 +785,18 @@ function wrapStreamFnWithFetch(streamFn: StreamFn, fetchImpl: typeof fetch): Str
             return wrappedIterator;
           }
           const value = (target as unknown as Record<string | symbol, unknown>)[prop];
+          if (prop === "result" && typeof value === "function") {
+            return async (...args: unknown[]) => {
+              try {
+                return await (value as (...innerArgs: unknown[]) => Promise<unknown>).apply(
+                  target,
+                  args,
+                );
+              } finally {
+                restore();
+              }
+            };
+          }
           // Bind methods to the original target
           if (typeof value === "function") {
             return (value as (...args: unknown[]) => unknown).bind(target);
@@ -760,28 +815,11 @@ export function maybeWrapStreamFnWithX402Payment(params: {
   streamFn?: StreamFn;
   provider: string;
   config?: OpenClawConfig;
-  apiKey?: string;
 }): StreamFn | undefined {
   if (!params.streamFn) {
     return params.streamFn;
   }
   if (params.provider !== X402_PROVIDER_ID) {
-    return params.streamFn;
-  }
-
-  // Detect signing mode: taskmarket sentinel, then SAW sentinel, then raw private key
-  let taskmarketConfig: ReturnType<typeof parseTaskmarketWalletConfig>;
-  try {
-    taskmarketConfig = parseTaskmarketWalletConfig(params.apiKey);
-  } catch (error) {
-    log.warn(
-      `x402 taskmarket credential parse failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    return params.streamFn;
-  }
-  const sawConfig = taskmarketConfig ? null : parseSawConfig(params.apiKey);
-  const privateKey = taskmarketConfig || sawConfig ? null : normalizePrivateKey(params.apiKey);
-  if (!taskmarketConfig && !sawConfig && !privateKey) {
     return params.streamFn;
   }
 
@@ -799,18 +837,33 @@ export function maybeWrapStreamFnWithX402Payment(params: {
     }
   })();
 
-  let staticBackendPromise: Promise<SigningBackend> | null = null;
-  let taskmarketBackendAddress: string | null = null;
+  const staticBackendPromises = new Map<string, Promise<SigningBackend>>();
+  const taskmarketBackendAddresses = new Map<string, string>();
 
-  const resolveBackend = async (): Promise<SigningBackend> => {
+  const resolveBackend = async (apiKey: string): Promise<SigningBackend | null> => {
+    let taskmarketConfig: ReturnType<typeof parseTaskmarketWalletConfig>;
+    try {
+      taskmarketConfig = parseTaskmarketWalletConfig(apiKey);
+    } catch (error) {
+      log.warn(
+        `x402 taskmarket credential parse failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
+    const sawConfig = taskmarketConfig ? null : parseSawConfig(apiKey);
+    const privateKey = taskmarketConfig || sawConfig ? null : normalizePrivateKey(apiKey);
+    if (!taskmarketConfig && !sawConfig && !privateKey) {
+      return null;
+    }
+
     // Resolve Taskmarket account at request time so the wallet helper's TTL cache can refresh.
     if (taskmarketConfig) {
       const { account, ownerAddress } = await createTaskmarketAccount({
         config: taskmarketConfig,
         fetchFn: baseFetch,
       });
-      if (taskmarketBackendAddress !== ownerAddress) {
-        taskmarketBackendAddress = ownerAddress;
+      if (taskmarketBackendAddresses.get(apiKey) !== ownerAddress) {
+        taskmarketBackendAddresses.set(apiKey, ownerAddress);
         log.info("x402 using taskmarket wallet backend", {
           address: ownerAddress,
         });
@@ -820,8 +873,9 @@ export function maybeWrapStreamFnWithX402Payment(params: {
       return { mode: "key", wallet, account } satisfies SigningBackend;
     }
 
-    if (staticBackendPromise) {
-      return staticBackendPromise;
+    const cachedBackend = staticBackendPromises.get(apiKey);
+    if (cachedBackend) {
+      return cachedBackend;
     }
 
     if (sawConfig) {
@@ -832,7 +886,7 @@ export function maybeWrapStreamFnWithX402Payment(params: {
       // Dynamic import — @daydreamsai/saw lives in the extension's dependencies,
       // not the root package, so we suppress the TS module resolution error.
       const sawModuleId = "@daydreamsai/saw";
-      staticBackendPromise = (
+      const sawBackendPromise = (
         import(/* webpackIgnore: true */ sawModuleId) as Promise<{
           createSawClient: (opts: { socketPath: string; wallet: string }) => SawClient;
         }>
@@ -850,19 +904,21 @@ export function maybeWrapStreamFnWithX402Payment(params: {
           } satisfies SigningBackend;
         });
       });
-      return staticBackendPromise;
+      staticBackendPromises.set(apiKey, sawBackendPromise);
+      return sawBackendPromise;
     }
 
     const account = privateKeyToAccount(privateKey as `0x${string}`);
     log.info("x402 using local key backend", { address: account.address });
     const chain = CHAINS[network] || base;
     const wallet = createWalletClient({ account, chain, transport: http() });
-    staticBackendPromise = Promise.resolve({
+    const keyBackendPromise = Promise.resolve({
       mode: "key",
       wallet,
       account,
     } satisfies SigningBackend);
-    return staticBackendPromise;
+    staticBackendPromises.set(apiKey, keyBackendPromise);
+    return keyBackendPromise;
   };
 
   const fetchWithPaymentImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -898,6 +954,10 @@ export function maybeWrapStreamFnWithX402Payment(params: {
       }
     }
 
+    const runtimeApiKey = parsed ? extractX402RuntimeCredential(parsed) : null;
+    if (parsed) {
+      input = parsed.toString();
+    }
     const pathname = parsed?.pathname || "";
     const isConfigPath = pathname.endsWith("/v1/config") || pathname.endsWith("/config");
     const isModelsPath = pathname.endsWith("/v1/models") || pathname.endsWith("/models");
@@ -933,7 +993,14 @@ export function maybeWrapStreamFnWithX402Payment(params: {
       return baseFetch(input, init);
     }
 
-    const backend = await resolveBackend();
+    if (!runtimeApiKey) {
+      return baseFetch(input, init);
+    }
+
+    const backend = await resolveBackend(runtimeApiKey);
+    if (!backend) {
+      return baseFetch(input, init);
+    }
 
     const sendWithPermit = async (permit: CachedPermit): Promise<Response> => {
       const headers = new Headers(init?.headers ?? {});
@@ -1038,6 +1105,8 @@ export function maybeWrapStreamFnWithX402Payment(params: {
 
 export const __testing = {
   buildPermitCacheKey,
+  buildX402RuntimeBaseUrl,
+  extractX402RuntimeCredential,
   parseSawConfig,
   parseErrorResponse,
   isInsufficientTokenBalanceError,
@@ -1050,4 +1119,5 @@ export const __testing = {
   rewriteInsufficientTokenBalanceResponse,
   formatInsufficientTokenBalanceMessage,
   INSUFFICIENT_TOKEN_BALANCE_USER_MESSAGE,
+  wrapStreamFnWithFetch,
 };

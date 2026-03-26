@@ -5,7 +5,6 @@ const PREFERRED_PROVIDER_BY_AUTH_CHOICE: Partial<Record<string, string>> = {
   chutes: "chutes",
   "litellm-api-key": "litellm",
   "custom-api-key": "custom",
-  x402: "x402",
 };
 
 function normalizeLegacyAuthChoice(choice: string): string {

@@ -101,7 +101,6 @@ import { normalizeToolName } from "../../tool-policy.js";
 import type { TranscriptPolicy } from "../../transcript-policy.js";
 import { resolveTranscriptPolicy } from "../../transcript-policy.js";
 import { DEFAULT_BOOTSTRAP_FILENAME } from "../../workspace.js";
-import { maybeWrapStreamFnWithX402Payment } from "../../x402-payment.js";
 import { isRunnerAbortError } from "../abort.js";
 import { appendCacheTtlTimestamp, isCacheTtlEligibleProvider } from "../cache-ttl.js";
 import type { CompactEmbeddedPiSessionParams } from "../compact.js";
@@ -2419,14 +2418,6 @@ export async function runEmbeddedAttempt(
           activeSession.agent.streamFn,
         );
       }
-
-      activeSession.agent.streamFn =
-        maybeWrapStreamFnWithX402Payment({
-          streamFn: activeSession.agent.streamFn,
-          provider: params.provider,
-          config: params.config,
-          apiKey: params.providerApiKey,
-        }) ?? activeSession.agent.streamFn;
 
       try {
         const prior = await sanitizeSessionHistory({
