@@ -44,4 +44,38 @@ describe("daydreams x402 auth plugin", () => {
       })?.method.id,
     ).toBe("wallet");
   });
+
+  it("uses runtime auth plus the generic stream wrapper seam", async () => {
+    const provider = registerProvider();
+
+    expect(typeof provider.wrapStreamFn).toBe("function");
+    await expect(
+      provider.prepareRuntimeAuth?.({
+        config: {
+          models: {
+            providers: {
+              x402: {
+                baseUrl: "https://ai.xgate.run",
+              },
+            },
+          },
+        } as never,
+        agentDir: "/tmp/agent",
+        workspaceDir: "/tmp/workspace",
+        env: process.env,
+        provider: "x402",
+        modelId: "x402/auto",
+        model: {
+          id: "auto",
+          provider: "x402",
+          baseUrl: "https://ai.xgate.run",
+        } as never,
+        apiKey: "saw:main@/run/saw.sock",
+        authMode: "api_key",
+        profileId: "x402:default",
+      }),
+    ).resolves.toMatchObject({
+      apiKey: "x402-wallet",
+    });
+  });
 });

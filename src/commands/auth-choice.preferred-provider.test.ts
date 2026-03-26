@@ -66,7 +66,16 @@ describe("resolvePreferredProviderForAuthChoice", () => {
     );
   });
 
-  it("keeps x402 available through the static fallback map", async () => {
+  it("resolves x402 through manifest metadata instead of a static fallback", async () => {
+    resolveManifestProviderAuthChoice.mockReturnValue({
+      pluginId: "daydreams-x402-auth",
+      providerId: "x402",
+      methodId: "taskmarket",
+      choiceId: "x402",
+      choiceLabel: "Taskmarket wallet keystore",
+    });
+
     await expect(resolvePreferredProviderForAuthChoice({ choice: "x402" })).resolves.toBe("x402");
+    expect(resolvePluginProviders).not.toHaveBeenCalled();
   });
 });

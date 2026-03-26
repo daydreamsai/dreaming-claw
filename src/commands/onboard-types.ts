@@ -49,8 +49,6 @@ export type BuiltInAuthChoice =
   | "mistral-api-key"
   | "volcengine-api-key"
   | "byteplus-api-key"
-  | "modelstudio-standard-api-key-cn"
-  | "modelstudio-standard-api-key"
   | "modelstudio-api-key-cn"
   | "modelstudio-api-key"
   | "custom-api-key"
@@ -85,7 +83,6 @@ export type BuiltInAuthChoiceGroupId =
   | "xai"
   | "volcengine"
   | "byteplus"
-  | "x402"
   | "custom";
 export type AuthChoiceGroupId = BuiltInAuthChoiceGroupId | (string & {});
 export type GatewayAuthChoice = "token" | "password";
